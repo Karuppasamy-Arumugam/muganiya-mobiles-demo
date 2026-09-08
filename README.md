@@ -4,6 +4,9 @@ A modern, responsive, high-performance **catalogue and service enquiry web platf
 
 This project is a **100% frontend-only client presentation demo**. It runs entirely in the browser without requiring a live backend, database server, or external API keys, while providing realistic interactions, full persistence, and an interactive CMS admin panel.
 
+🔗 **Live Website:** [https://karuppasamy-arumugam.github.io/muganiya-mobiles-demo/](https://karuppasamy-arumugam.github.io/muganiya-mobiles-demo/)  
+🔐 **Admin Portal:** [https://karuppasamy-arumugam.github.io/muganiya-mobiles-demo/#/admin/login](https://karuppasamy-arumugam.github.io/muganiya-mobiles-demo/#/admin/login) (User: `admin` | Pass: `admin123`)
+
 ---
 
 ## 🌟 Key Highlights & Architectural Features
