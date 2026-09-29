@@ -15,20 +15,19 @@ export default function BrandLogo({ size = 'default', light = false }) {
       className="d-inline-flex align-items-center gap-2 text-decoration-none"
       aria-label="Muganiyaa-Mobiles Home"
     >
-      {/* Client logo image */}
+      {/* Logo Image */}
       <img
         src={logo}
-        alt=""
+        alt="Muganiyaa Logo"
         style={{
-          width: iconSize,
-          height: iconSize,
+          width: `${iconSize}px`,
+          height: `${iconSize}px`,
           objectFit: 'contain',
-          display: 'block',
-          flexShrink: 0,
+          flexShrink: 0
         }}
       />
 
-      {/* Shop name and tagline */}
+      {/* Wordmark */}
       <div className="d-flex flex-column justify-content-center">
         <div
           style={{
@@ -37,11 +36,11 @@ export default function BrandLogo({ size = 'default', light = false }) {
             fontSize,
             lineHeight: 1.1,
             color: light ? '#FFFFFF' : '#29252A',
-            letterSpacing: '-0.02em',
+            letterSpacing: '-0.02em'
           }}
         >
           Muganiyaa
-          <span style={{ color: light ? '#FFB8BD' : '#B72E35' }}>
+          <span style={{ color: '#B72E35', fontWeight: 800 }}>
             -Mobiles
           </span>
         </div>
@@ -53,7 +52,7 @@ export default function BrandLogo({ size = 'default', light = false }) {
               fontWeight: 600,
               color: light ? 'rgba(255,255,255,0.75)' : '#756D71',
               letterSpacing: '0.04em',
-              textTransform: 'uppercase',
+              textTransform: 'uppercase'
             }}
           >
             Mobiles • Electronics • Repairs
