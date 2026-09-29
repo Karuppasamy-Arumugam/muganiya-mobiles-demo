@@ -34,14 +34,14 @@ export default function Header() {
             </span>
             <span className="d-none d-md-inline-flex align-items-center gap-1">
               <MapPin size={13} className="text-danger" />
-              <span>Main Road, Demo City (In-store Pick-up Available)</span>
+              <span>154D, 55D, Mela Masi Veethi N, Tenkasi, Tamil Nadu 627811 (In-store Pick-up Available)</span>
             </span>
           </div>
           <div className="d-flex align-items-center gap-3">
             <span className="badge-blush d-none d-sm-inline-block">Client Demo Prototype</span>
             <a href={`tel:${contact.phone?.replace(/[^0-9+]/g, '')}`} className="text-decoration-none fw-semibold text-dark d-inline-flex align-items-center gap-1">
               <Phone size={13} className="text-danger" />
-              <span>Enquiry: {contact.phone || '+91 98765 43210'}</span>
+              <span>Enquiry: {contact.phone || '+91 97874 35713'}</span>
             </a>
           </div>
         </div>
