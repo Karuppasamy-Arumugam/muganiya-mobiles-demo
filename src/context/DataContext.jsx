@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import { loadDatabase, saveDatabase, resetDatabase } from '../services/storageService';
+import { supabase } from '../services/supabaseClient';
 
 const DataContext = createContext(null);
 
@@ -21,17 +22,47 @@ export function DataProvider({ children }) {
   }, [db.offers]);
 
   // Product Actions
-  const addProduct = (newProduct) => {
+  const addProduct = async (newProduct) => {
+    const { data: category, error: categoryError } = await supabase
+      .from('categories')
+      .select('id')
+      .eq('slug', newProduct.categorySlug)
+      .single();
+
+    if (categoryError) throw categoryError;
+
+    const isPublished = newProduct.status === 'published';
+
+    const { data, error } = await supabase
+      .from('products')
+      .insert({
+        category_id: category.id,
+        name: newProduct.name,
+        slug: newProduct.slug || newProduct.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
+        brand: newProduct.brand,
+        description: newProduct.description,
+        base_price: Number(newProduct.sellingPrice || 0),
+        status: isPublished ? 'active' : 'draft',
+        is_active: isPublished,
+        is_featured: Boolean(newProduct.isFeatured),
+        highlights: (newProduct.highlights || []).filter(Boolean)
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
     const productWithId = {
       ...newProduct,
-      id: newProduct.id || `prod-${Date.now()}`,
-      slug: newProduct.slug || newProduct.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
-      createdAt: new Date().toISOString()
+      id: data.id,
+      createdAt: data.created_at
     };
+
     setDb((prev) => ({
       ...prev,
       products: [productWithId, ...prev.products]
     }));
+
     return productWithId;
   };
 

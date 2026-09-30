@@ -24,6 +24,8 @@ export default function AdminProductEditor() {
 
   const [activeTab, setActiveTab] = useState('basic');
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -90,16 +92,16 @@ export default function AdminProductEditor() {
       catSlug === 'mobiles'
         ? 'phone'
         : catSlug === 'tvs'
-        ? 'tv'
-        : catSlug === 'audio'
-        ? 'audio'
-        : catSlug === 'cooling-appliances'
-        ? 'cooling'
-        : catSlug === 'kitchen-appliances'
-        ? 'appliance'
-        : catSlug === 'sim-cards'
-        ? 'sim'
-        : 'accessory';
+          ? 'tv'
+          : catSlug === 'audio'
+            ? 'audio'
+            : catSlug === 'cooling-appliances'
+              ? 'cooling'
+              : catSlug === 'kitchen-appliances'
+                ? 'appliance'
+                : catSlug === 'sim-cards'
+                  ? 'sim'
+                  : 'accessory';
 
     setFormData((prev) => ({
       ...prev,
@@ -204,26 +206,39 @@ export default function AdminProductEditor() {
   };
 
   // Save / Update Handler
-  const handleSaveProduct = (targetStatus = formData.status) => {
+  const handleSaveProduct = async (targetStatus = formData.status) => {
+    setSaveError('');
+    setSaveSuccess(false);
+    setIsSaving(true);
+
     const productPayload = {
       ...formData,
       status: targetStatus,
       sellingPrice: Number(formData.sellingPrice),
       originalPrice: Number(formData.originalPrice),
-      slug: formData.slug || formData.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+      slug: formData.slug || formData.name.toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '')
     };
 
-    if (isEditMode) {
-      updateProduct(id, productPayload);
-    } else {
-      addProduct(productPayload);
-    }
+    try {
+      if (isEditMode) {
+        throw new Error('Editing existing products is not connected to Supabase yet. Please use Add New Product for now.');
+      }
 
-    setSaveSuccess(true);
-    setTimeout(() => {
-      setSaveSuccess(false);
-      navigate('/admin/products');
-    }, 800);
+      await addProduct(productPayload);
+      setSaveSuccess(true);
+
+      setTimeout(() => {
+        setSaveSuccess(false);
+        navigate('/admin/products');
+      }, 800);
+    } catch (error) {
+      console.error('Could not save product:', error);
+      setSaveError(error.message || 'Could not save the product. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -270,6 +285,12 @@ export default function AdminProductEditor() {
         </div>
       )}
 
+      {saveError && (
+        <div className="alert alert-danger" role="alert">
+          {saveError}
+        </div>
+      )}
+
       {/* 8-Tab Navigation Bar */}
       <div className="card border rounded-4 bg-white shadow-sm overflow-hidden" style={{ borderColor: 'var(--border-color)' }}>
         <div className="border-bottom bg-light px-3 pt-2">
@@ -287,9 +308,8 @@ export default function AdminProductEditor() {
               <li key={tab.id} className="nav-item">
                 <button
                   type="button"
-                  className={`nav-link border-0 fw-semibold px-3 py-2 ${
-                    activeTab === tab.id ? 'active text-danger border-bottom border-danger border-3 bg-white' : 'text-muted'
-                  }`}
+                  className={`nav-link border-0 fw-semibold px-3 py-2 ${activeTab === tab.id ? 'active text-danger border-bottom border-danger border-3 bg-white' : 'text-muted'
+                    }`}
                   onClick={() => setActiveTab(tab.id)}
                 >
                   {tab.label}
