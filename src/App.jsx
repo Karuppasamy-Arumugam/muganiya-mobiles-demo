@@ -34,10 +34,20 @@ import AdminDemoSettings from './pages/admin/AdminDemoSettings';
 import { useAuth } from './context/AuthContext';
 
 function ProtectedAdminRoute({ children }) {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="min-vh-100 d-flex align-items-center justify-content-center">
+        <p className="text-muted mb-0">Checking admin access…</p>
+      </div>
+    );
+  }
+
   if (!isAuthenticated) {
     return <Navigate to="/admin/login" replace />;
   }
+
   return children;
 }
 
