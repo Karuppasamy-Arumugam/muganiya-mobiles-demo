@@ -38,7 +38,6 @@ export default function Header() {
             </span>
           </div>
           <div className="d-flex align-items-center gap-3">
-            <span className="badge-blush d-none d-sm-inline-block">Client Demo Prototype</span>
             <a href={`tel:${contact.phone?.replace(/[^0-9+]/g, '')}`} className="text-decoration-none fw-semibold text-dark d-inline-flex align-items-center gap-1">
               <Phone size={13} className="text-danger" />
               <span>Enquiry: {contact.phone || '+91 97874 35713'}</span>
