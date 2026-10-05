@@ -37,3 +37,4 @@ Thumbs.db
 # Local Supabase CLI files and generated secrets
 supabase/.branches/
 supabase/.temp/
+supabase/snippets/

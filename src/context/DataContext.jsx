@@ -1,5 +1,15 @@
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
-import { loadDatabase, saveDatabase, resetDatabase } from '../services/storageService';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useMemo
+} from 'react';
+import {
+  loadDatabase,
+  saveDatabase,
+  resetDatabase
+} from '../services/storageService';
 import { supabase } from '../services/supabaseClient';
 
 const DataContext = createContext(null);
@@ -7,21 +17,21 @@ const DataContext = createContext(null);
 export function DataProvider({ children }) {
   const [db, setDb] = useState(() => loadDatabase());
 
-  // Save changes to localStorage whenever db changes
+  // Keep the app's local browser data in sync with its current state.
   useEffect(() => {
     saveDatabase(db);
   }, [db]);
 
-  // Public Filtered Helpers
+  // Public filtered helpers
   const publishedProducts = useMemo(() => {
-    return (db.products || []).filter((p) => p.status === 'published');
+    return (db.products || []).filter((product) => product.status === 'published');
   }, [db.products]);
 
   const activeOffers = useMemo(() => {
-    return (db.offers || []).filter((o) => o.status === 'active');
+    return (db.offers || []).filter((offer) => offer.status === 'active');
   }, [db.offers]);
 
-  // Product Actions
+  // Product actions
   const addProduct = async (newProduct) => {
     const { data: category, error: categoryError } = await supabase
       .from('categories')
@@ -29,16 +39,24 @@ export function DataProvider({ children }) {
       .eq('slug', newProduct.categorySlug)
       .single();
 
-    if (categoryError) throw categoryError;
+    if (categoryError) {
+      throw categoryError;
+    }
 
     const isPublished = newProduct.status === 'published';
+    const slug =
+      newProduct.slug ||
+      newProduct.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '');
 
     const { data, error } = await supabase
       .from('products')
       .insert({
         category_id: category.id,
         name: newProduct.name,
-        slug: newProduct.slug || newProduct.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
+        slug,
         brand: newProduct.brand,
         description: newProduct.description,
         base_price: Number(newProduct.sellingPrice || 0),
@@ -50,113 +68,180 @@ export function DataProvider({ children }) {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw error;
+    }
+
+    const variantRows = (newProduct.variants || []).map((variant) => {
+      const isAvailable = variant.stockStatus !== 'Out of Stock';
+      const color = (newProduct.colors || []).find(
+        (item) => item.name === variant.color
+      );
+
+      return {
+        product_id: data.id,
+        sku: variant.sku || null,
+        color_name: variant.color || null,
+        color_hex: color?.hex || null,
+        ram: variant.ram || null,
+        storage: variant.storage || null,
+        price: Number(
+          variant.sellingPrice ?? newProduct.sellingPrice ?? 0
+        ),
+        stock_quantity: isAvailable ? 1 : 0,
+        is_available: isAvailable
+      };
+    });
+
+    if (variantRows.length > 0) {
+      const { error: variantError } = await supabase
+        .from('product_variants')
+        .insert(variantRows);
+
+      if (variantError) {
+        const { error: rollbackError } = await supabase
+          .from('products')
+          .delete()
+          .eq('id', data.id);
+
+        if (rollbackError) {
+          console.error('Could not remove product after variant save failed:', rollbackError);
+        }
+
+        throw variantError;
+      }
+    }
 
     const productWithId = {
       ...newProduct,
       id: data.id,
-      createdAt: data.created_at
+      slug: data.slug,
+      createdAt: data.created_at,
+      updatedAt: data.updated_at
     };
 
-    setDb((prev) => ({
-      ...prev,
-      products: [productWithId, ...prev.products]
+    setDb((previousDb) => ({
+      ...previousDb,
+      products: [productWithId, ...(previousDb.products || [])]
     }));
 
     return productWithId;
   };
 
   const updateProduct = (id, updates) => {
-    setDb((prev) => ({
-      ...prev,
-      products: prev.products.map((p) => (p.id === id ? { ...p, ...updates, updatedAt: new Date().toISOString() } : p))
+    setDb((previousDb) => ({
+      ...previousDb,
+      products: (previousDb.products || []).map((product) =>
+        product.id === id
+          ? {
+              ...product,
+              ...updates,
+              updatedAt: new Date().toISOString()
+            }
+          : product
+      )
     }));
   };
 
   const deleteProduct = (id) => {
-    setDb((prev) => ({
-      ...prev,
-      products: prev.products.filter((p) => p.id !== id)
+    setDb((previousDb) => ({
+      ...previousDb,
+      products: (previousDb.products || []).filter(
+        (product) => product.id !== id
+      )
     }));
   };
 
-  // Category Actions
+  // Category actions
   const addCategory = (category) => {
-    const newCat = {
+    const newCategory = {
       ...category,
       id: category.id || `cat-${Date.now()}`,
-      slug: category.slug || category.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+      slug:
+        category.slug ||
+        category.name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/(^-|-$)/g, '')
     };
-    setDb((prev) => ({
-      ...prev,
-      categories: [...prev.categories, newCat]
+
+    setDb((previousDb) => ({
+      ...previousDb,
+      categories: [...(previousDb.categories || []), newCategory]
     }));
   };
 
   const updateCategory = (id, updates) => {
-    setDb((prev) => ({
-      ...prev,
-      categories: prev.categories.map((c) => (c.id === id ? { ...c, ...updates } : c))
+    setDb((previousDb) => ({
+      ...previousDb,
+      categories: (previousDb.categories || []).map((category) =>
+        category.id === id ? { ...category, ...updates } : category
+      )
     }));
   };
 
   const deleteCategory = (id) => {
-    setDb((prev) => ({
-      ...prev,
-      categories: prev.categories.filter((c) => c.id !== id)
+    setDb((previousDb) => ({
+      ...previousDb,
+      categories: (previousDb.categories || []).filter(
+        (category) => category.id !== id
+      )
     }));
   };
 
-  // Offer Actions
+  // Offer actions
   const addOffer = (offer) => {
     const newOffer = {
       ...offer,
       id: offer.id || `off-${Date.now()}`
     };
-    setDb((prev) => ({
-      ...prev,
-      offers: [newOffer, ...prev.offers]
+
+    setDb((previousDb) => ({
+      ...previousDb,
+      offers: [newOffer, ...(previousDb.offers || [])]
     }));
   };
 
   const updateOffer = (id, updates) => {
-    setDb((prev) => ({
-      ...prev,
-      offers: prev.offers.map((o) => (o.id === id ? { ...o, ...updates } : o))
+    setDb((previousDb) => ({
+      ...previousDb,
+      offers: (previousDb.offers || []).map((offer) =>
+        offer.id === id ? { ...offer, ...updates } : offer
+      )
     }));
   };
 
   const deleteOffer = (id) => {
-    setDb((prev) => ({
-      ...prev,
-      offers: prev.offers.filter((o) => o.id !== id)
+    setDb((previousDb) => ({
+      ...previousDb,
+      offers: (previousDb.offers || []).filter((offer) => offer.id !== id)
     }));
   };
 
-  // Banner Actions
+  // Banner actions
   const updateBanners = (banners) => {
-    setDb((prev) => ({ ...prev, banners }));
+    setDb((previousDb) => ({ ...previousDb, banners }));
   };
 
-  // Service Actions
+  // Service actions
   const updateServices = (services) => {
-    setDb((prev) => ({ ...prev, services }));
+    setDb((previousDb) => ({ ...previousDb, services }));
   };
 
-  // Content & Settings Actions
+  // Content and settings actions
   const updateWebsiteContent = (websiteContent) => {
-    setDb((prev) => ({ ...prev, websiteContent }));
+    setDb((previousDb) => ({ ...previousDb, websiteContent }));
   };
 
   const updateContactSettings = (contactSettings) => {
-    setDb((prev) => ({ ...prev, contactSettings }));
+    setDb((previousDb) => ({ ...previousDb, contactSettings }));
   };
 
   const updateChatbotSettings = (chatbotSettings) => {
-    setDb((prev) => ({ ...prev, chatbotSettings }));
+    setDb((previousDb) => ({ ...previousDb, chatbotSettings }));
   };
 
-  // Enquiries Actions
+  // Enquiry actions
   const addEnquiry = (enquiry) => {
     const newEnquiry = {
       ...enquiry,
@@ -164,33 +249,41 @@ export function DataProvider({ children }) {
       createdAt: new Date().toISOString(),
       status: 'New',
       notes: '',
-      repairProgress: enquiry.enquiryType?.includes('Repair') ? 'Received' : 'Not Applicable'
+      repairProgress: enquiry.enquiryType?.includes('Repair')
+        ? 'Received'
+        : 'Not Applicable'
     };
-    setDb((prev) => ({
-      ...prev,
-      enquiries: [newEnquiry, ...prev.enquiries]
+
+    setDb((previousDb) => ({
+      ...previousDb,
+      enquiries: [newEnquiry, ...(previousDb.enquiries || [])]
     }));
+
     return newEnquiry;
   };
 
   const updateEnquiry = (id, updates) => {
-    setDb((prev) => ({
-      ...prev,
-      enquiries: prev.enquiries.map((e) => (e.id === id ? { ...e, ...updates } : e))
+    setDb((previousDb) => ({
+      ...previousDb,
+      enquiries: (previousDb.enquiries || []).map((enquiry) =>
+        enquiry.id === id ? { ...enquiry, ...updates } : enquiry
+      )
     }));
   };
 
   const deleteEnquiry = (id) => {
-    setDb((prev) => ({
-      ...prev,
-      enquiries: prev.enquiries.filter((e) => e.id !== id)
+    setDb((previousDb) => ({
+      ...previousDb,
+      enquiries: (previousDb.enquiries || []).filter(
+        (enquiry) => enquiry.id !== id
+      )
     }));
   };
 
   // Reset to default sample seed data
   const handleResetData = () => {
-    const fresh = resetDatabase();
-    setDb(fresh);
+    const freshDatabase = resetDatabase();
+    setDb(freshDatabase);
   };
 
   const value = {
@@ -217,13 +310,19 @@ export function DataProvider({ children }) {
     resetData: handleResetData
   };
 
-  return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
+  return (
+    <DataContext.Provider value={value}>
+      {children}
+    </DataContext.Provider>
+  );
 }
 
 export function useData() {
   const context = useContext(DataContext);
+
   if (!context) {
     throw new Error('useData must be used within a DataProvider');
   }
+
   return context;
 }
