@@ -22,6 +22,127 @@ export function DataProvider({ children }) {
     saveDatabase(db);
   }, [db]);
 
+  // Load products, categories, specifications, and images from Supabase.
+  useEffect(() => {
+    if (!supabase) return undefined;
+
+    let cancelled = false;
+
+    async function loadProductsFromSupabase() {
+      const [
+        { data: categories, error: categoryError },
+        { data: products, error: productError },
+        { data: specificationRows, error: specificationError },
+        { data: imageRows, error: imageError }
+      ] = await Promise.all([
+        supabase.from('categories').select('id, name, slug'),
+        supabase
+          .from('products')
+          .select(
+            'id, category_id, name, slug, brand, description, base_price, status, is_active, is_featured, highlights'
+          )
+          .order('name'),
+        supabase
+          .from('product_specifications')
+          .select('product_id, name, value, sort_order')
+          .order('sort_order'),
+        supabase
+          .from('product_images')
+          .select('product_id, storage_path, sort_order, is_primary')
+          .order('sort_order')
+      ]);
+
+      if (categoryError) throw categoryError;
+      if (productError) throw productError;
+      if (specificationError) throw specificationError;
+      if (imageError) throw imageError;
+      if (cancelled) return;
+
+      const categoryById = new Map(
+        (categories || []).map((category) => [category.id, category])
+      );
+
+      const specificationsByProductId = new Map();
+
+      for (const row of specificationRows || []) {
+        const specifications =
+          specificationsByProductId.get(row.product_id) || {};
+
+        specifications[row.name] = row.value;
+        specificationsByProductId.set(row.product_id, specifications);
+      }
+
+      const imagesByProductId = new Map();
+
+      for (const row of imageRows || []) {
+        const images = imagesByProductId.get(row.product_id) || [];
+        images.push(row);
+        imagesByProductId.set(row.product_id, images);
+      }
+
+      setDb((previousDb) => {
+        const localProductBySlug = new Map(
+          (previousDb.products || []).map((product) => [product.slug, product])
+        );
+
+        const loadedProducts = (products || []).map((row) => {
+          const category = categoryById.get(row.category_id);
+          const localProduct = localProductBySlug.get(row.slug);
+          const productImages = imagesByProductId.get(row.id) || [];
+
+          const imageUrls = productImages
+            .map((image) => image.storage_path)
+            .filter(Boolean);
+
+          const primaryImage =
+            productImages.find((image) => image.is_primary)?.storage_path ||
+            imageUrls[0] ||
+            '';
+
+          const isPublished = row.status === 'active' && row.is_active;
+
+          return {
+            ...localProduct,
+            id: row.id,
+            name: row.name,
+            slug: row.slug,
+            brand: row.brand,
+            description: row.description || '',
+            category: category?.name || localProduct?.category || '',
+            categorySlug: category?.slug || localProduct?.categorySlug || '',
+            sellingPrice: Number(row.base_price || 0),
+            originalPrice:
+              localProduct?.originalPrice ?? Number(row.base_price || 0),
+            status: isPublished ? 'published' : row.status,
+            isFeatured: Boolean(row.is_featured),
+            highlights: row.highlights || [],
+            images: imageUrls.length ? imageUrls : localProduct?.images || [],
+            coverImage: primaryImage || localProduct?.coverImage || '',
+            variants: localProduct?.variants || [],
+            specifications:
+              specificationsByProductId.get(row.id) ||
+              localProduct?.specifications ||
+              {}
+          };
+        });
+
+        return {
+          ...previousDb,
+          categories: categories || previousDb.categories || [],
+          products: loadedProducts
+        };
+      });
+    }
+
+    loadProductsFromSupabase().catch((error) => {
+      console.error('Could not load products from Supabase:', error);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Public filtered helpers
   const publishedProducts = useMemo(() => {
     return (db.products || []).filter((product) => product.status === 'published');
@@ -111,11 +232,80 @@ export function DataProvider({ children }) {
         throw variantError;
       }
     }
+    const specificationRows = Object.entries(
+      newProduct.specifications || {}
+    )
+      .filter(([, value]) => String(value ?? '').trim())
+      .map(([name, value], index) => ({
+        product_id: data.id,
+        group_name: newProduct.specsType || null,
+        name,
+        value: String(value).trim(),
+        sort_order: index
+      }));
+
+    if (specificationRows.length > 0) {
+      const { error: specificationSaveError } = await supabase
+        .from('product_specifications')
+        .insert(specificationRows);
+
+      if (specificationSaveError) {
+        const { error: rollbackError } = await supabase
+          .from('products')
+          .delete()
+          .eq('id', data.id);
+
+        if (rollbackError) {
+          console.error('Could not remove product after specification save failed:', rollbackError);
+        }
+
+        throw specificationSaveError;
+      }
+    }
+
+    const imageUrls = [
+      ...new Set(
+        [
+          newProduct.coverImage,
+          ...(newProduct.images || [])
+        ].filter((image) => typeof image === 'string' && image.trim())
+      )
+    ];
+
+    const imageRows = imageUrls.map((url, index) => ({
+      product_id: data.id,
+      storage_path: url,
+      alt_text: newProduct.name,
+      sort_order: index,
+      is_primary: url === newProduct.coverImage
+    }));
+
+    if (imageRows.length > 0) {
+      const { error: imageSaveError } = await supabase
+        .from('product_images')
+        .insert(imageRows);
+
+      if (imageSaveError) {
+        const { error: rollbackError } = await supabase
+          .from('products')
+          .delete()
+          .eq('id', data.id);
+
+        if (rollbackError) {
+          console.error(
+            'Could not remove product after image save failed:',
+            rollbackError
+          );
+        }
+
+        throw imageSaveError;
+      }
+    }
 
     const productWithId = {
       ...newProduct,
       id: data.id,
-      slug: data.slug,
+      slug: slug,
       createdAt: data.created_at,
       updatedAt: data.updated_at
     };
@@ -134,10 +324,10 @@ export function DataProvider({ children }) {
       products: (previousDb.products || []).map((product) =>
         product.id === id
           ? {
-              ...product,
-              ...updates,
-              updatedAt: new Date().toISOString()
-            }
+            ...product,
+            ...updates,
+            updatedAt: new Date().toISOString()
+          }
           : product
       )
     }));

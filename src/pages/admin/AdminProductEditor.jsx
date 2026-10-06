@@ -10,8 +10,8 @@ import {
   Sliders
 } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { saveImageBlob } from '../../services/indexedDbService';
 import { MOBILE_BRANDS } from '../../services/seedData';
+import { supabase } from '../../services/supabaseClient';
 
 export default function AdminProductEditor() {
   const { id } = useParams();
@@ -116,16 +116,41 @@ export default function AdminProductEditor() {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
 
-    for (const file of files) {
-      const imageId = `img-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9]/g, '')}`;
-      const dataUrl = await saveImageBlob(imageId, file);
-      if (dataUrl) {
-        setFormData((prev) => ({
-          ...prev,
-          coverImage: prev.coverImage || dataUrl,
-          images: [...prev.images, dataUrl]
+    setSaveError('');
+
+    try {
+      if (!supabase) {
+        throw new Error('Supabase is not configured for image uploads.');
+      }
+
+      for (const file of files) {
+        const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-');
+        const filePath = `products/${Date.now()}-${crypto.randomUUID()}-${safeFileName}`;
+
+        const { data, error } = await supabase.storage
+          .from('product-images')
+          .upload(filePath, file, {
+            cacheControl: '3600',
+            upsert: false
+          });
+
+        if (error) throw error;
+
+        const { data: publicData } = supabase.storage
+          .from('product-images')
+          .getPublicUrl(data.path);
+
+        setFormData((previousForm) => ({
+          ...previousForm,
+          coverImage: previousForm.coverImage || publicData.publicUrl,
+          images: [...previousForm.images, publicData.publicUrl]
         }));
       }
+    } catch (error) {
+      console.error('Could not upload product image:', error);
+      setSaveError(error.message || 'Could not upload the image.');
+    } finally {
+      e.target.value = '';
     }
   };
 
