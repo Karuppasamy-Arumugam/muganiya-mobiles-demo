@@ -111,7 +111,7 @@ export default function AdminProductEditor() {
     }));
   };
 
-  // Image Upload via IndexedDB
+  // Image Upload to Supabase Storage
   const handleImageFileUpload = async (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
@@ -248,10 +248,10 @@ export default function AdminProductEditor() {
 
     try {
       if (isEditMode) {
-        throw new Error('Editing existing products is not connected to Supabase yet. Please use Add New Product for now.');
+        await updateProduct(id, productPayload);
+      } else {
+        await addProduct(productPayload);
       }
-
-      await addProduct(productPayload);
       setSaveSuccess(true);
 
       setTimeout(() => {
@@ -437,12 +437,12 @@ export default function AdminProductEditor() {
             <div>
               <h6 className="fw-bold mb-3">Product Photos & Cover Image</h6>
 
-              {/* Upload Input via IndexedDB */}
+              {/* Upload Input to Supabase Storage */}
               <div className="p-4 border rounded-3 bg-light text-center mb-4">
                 <Upload size={32} className="text-danger mb-2" />
                 <h6 className="fw-bold mb-1">Upload Local Image Files</h6>
                 <p className="text-muted small mb-3">
-                  Images are stored in browser <strong>IndexedDB</strong>, preserving quality without filling localStorage limits.
+                  Uploaded images are stored in <strong>Supabase Storage</strong> and linked to this product when you save it.
                 </p>
                 <label className="btn btn-brand-primary btn-sm px-4 cursor-pointer">
                   <span>Browse Photos from Computer</span>
@@ -985,3 +985,4 @@ export default function AdminProductEditor() {
     </div>
   );
 }
+

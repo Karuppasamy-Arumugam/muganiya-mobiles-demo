@@ -19,6 +19,9 @@ export default function AdminProducts() {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedStatus, setSelectedStatus] = useState('all');
   const [productToDelete, setProductToDelete] = useState(null);
+  const [actionError, setActionError] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const categories = db.categories || [];
   const products = db.products || [];
@@ -46,15 +49,36 @@ export default function AdminProducts() {
     });
   }, [products, selectedCategory, selectedStatus, searchTerm]);
 
-  const togglePublishStatus = (product) => {
+  const togglePublishStatus = async (product) => {
     const nextStatus = product.status === 'published' ? 'draft' : 'published';
-    updateProduct(product.id, { status: nextStatus });
+    setActionError('');
+
+    try {
+      await updateProduct(product.id, { status: nextStatus });
+    } catch (error) {
+      console.error('Could not update product visibility:', error);
+      setActionError(error.message || 'Could not update product visibility.');
+    }
   };
 
-  const confirmDelete = () => {
-    if (productToDelete) {
-      deleteProduct(productToDelete.id);
+  const confirmDelete = async () => {
+    if (!productToDelete || isDeleting) return;
+
+    setDeleteError('');
+    setIsDeleting(true);
+
+    try {
+      const result = await deleteProduct(productToDelete.id);
       setProductToDelete(null);
+
+      if (result?.storageCleanupWarning) {
+        setActionError(result.storageCleanupWarning);
+      }
+    } catch (error) {
+      console.error('Could not delete product:', error);
+      setDeleteError(error.message || 'Could not delete the product.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -131,6 +155,12 @@ export default function AdminProducts() {
           </div>
         </div>
       </div>
+
+      {(actionError || deleteError) && (
+        <div className="alert alert-danger" role="alert">
+          {deleteError || actionError}
+        </div>
+      )}
 
       {/* Products Table */}
       <div className="card border rounded-4 bg-white shadow-sm overflow-hidden" style={{ borderColor: 'var(--border-color)' }}>
@@ -301,18 +331,23 @@ export default function AdminProducts() {
               </div>
               <div className="modal-body">
                 <p>
-                  Are you sure you want to delete <strong>{productToDelete.name}</strong> from your local product catalogue?
+                  Are you sure you want to permanently delete <strong>{productToDelete.name}</strong> from Supabase?
                 </p>
                 <small className="text-muted">
-                  This action removes the item from your browser's demo storage. You can restore sample defaults anytime in Demo Settings.
+                  This also removes its database variants, specifications, image records, and offer links. This cannot be undone.
                 </small>
               </div>
+              {deleteError && (
+                <div className="alert alert-danger mx-3 mb-0" role="alert">
+                  {deleteError}
+                </div>
+              )}
               <div className="modal-footer">
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setProductToDelete(null)}>
+                <button type="button" className="btn btn-secondary btn-sm" disabled={isDeleting} onClick={() => setProductToDelete(null)}>
                   Cancel
                 </button>
-                <button type="button" className="btn btn-danger btn-sm" onClick={confirmDelete}>
-                  Yes, Remove Product
+                <button type="button" className="btn btn-danger btn-sm" disabled={isDeleting} onClick={confirmDelete}>
+                  {isDeleting ? 'Deleting...' : 'Yes, Delete Product'}
                 </button>
               </div>
             </div>
@@ -322,3 +357,5 @@ export default function AdminProducts() {
     </div>
   );
 }
+
+
