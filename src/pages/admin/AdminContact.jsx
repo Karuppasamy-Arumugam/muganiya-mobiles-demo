@@ -1,17 +1,33 @@
-import React, { useState } from 'react';
-import { Save, CheckCircle2, Phone, Mail, MapPin, Clock } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Save, CheckCircle2, Phone, Mail, MapPin, Clock, ExternalLink } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 
 export default function AdminContact() {
   const { db, updateContactSettings } = useData();
   const [settings, setSettings] = useState(db.contactSettings || {});
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
-  const handleSave = (e) => {
+  useEffect(() => {
+    setSettings(db.contactSettings || {});
+  }, [db.contactSettings]);
+
+  const handleSave = async (e) => {
     e.preventDefault();
-    updateContactSettings(settings);
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2000);
+    setIsSaving(true);
+    setSaveError('');
+    setSavedSuccess(false);
+    try {
+      await updateContactSettings(settings);
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 3000);
+    } catch (error) {
+      console.error('Could not save showroom settings:', error);
+      setSaveError(error.message || 'Could not save showroom settings.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -24,16 +40,18 @@ export default function AdminContact() {
           </p>
         </div>
 
-        <button type="button" className="btn btn-brand-primary btn-sm d-inline-flex align-items-center gap-1" onClick={handleSave}>
+        <button type="button" className="btn btn-brand-primary btn-sm d-inline-flex align-items-center gap-1" onClick={handleSave} disabled={isSaving}>
           <Save size={16} />
-          <span>Save Contact Settings</span>
+          <span>{isSaving ? 'Saving…' : 'Save Contact Settings'}</span>
         </button>
       </div>
+
+      {saveError && <div className="alert alert-danger" role="alert">{saveError}</div>}
 
       {savedSuccess && (
         <div className="alert alert-success d-flex align-items-center gap-2 mb-4 shadow-sm">
           <CheckCircle2 size={18} />
-          <span>Contact details and store hours updated across all header, footer, and floating buttons!</span>
+          <span>Contact details, hours, and map link saved to Supabase.</span>
         </div>
       )}
 
@@ -125,7 +143,22 @@ export default function AdminContact() {
                 value={settings.mapQuery || ''}
                 onChange={(e) => setSettings({ ...settings, mapQuery: e.target.value })}
               />
-              <small className="text-muted">Will populate the Google Map query when verified.</small>
+              <small className="text-muted">Used to show the map preview. Verify this query matches the showroom before publishing.</small>
+            </div>
+
+            <div className="col-12">
+              <label className="form-label small fw-bold text-dark">
+                <ExternalLink size={15} className="text-danger me-1" />
+                Google Maps Location Link
+              </label>
+              <input
+                type="url"
+                className="form-control"
+                placeholder="https://maps.app.goo.gl/..."
+                value={settings.mapUrl || ''}
+                onChange={(e) => setSettings({ ...settings, mapUrl: e.target.value })}
+              />
+              <small className="text-muted">Add the verified Google Maps share link. It will appear on the public Contact page.</small>
             </div>
           </div>
         </div>

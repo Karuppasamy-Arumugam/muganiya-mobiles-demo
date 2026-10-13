@@ -11,6 +11,7 @@ import {
   Wrench
 } from 'lucide-react';
 import { useData } from '../../context/DataContext';
+import { isSupabaseConfigured } from '../../services/supabaseClient';
 
 export default function ContactPage() {
   const [searchParams] = useSearchParams();
@@ -30,6 +31,10 @@ export default function ContactPage() {
 
   const [errors, setErrors] = useState({});
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [emailSent, setEmailSent] = useState(false);
+  const [emailNotice, setEmailNotice] = useState('');
   const [savedEnquiryId, setSavedEnquiryId] = useState(null);
 
   useEffect(() => {
@@ -49,6 +54,14 @@ export default function ContactPage() {
   }, [preselectedService, preselectedProduct]);
 
   const contact = db.contactSettings || {};
+  const mapSearchQuery = contact.mapQuery || contact.address || 'Muganiyaa Mobiles';
+  const encodedMapQuery = encodeURIComponent(mapSearchQuery);
+  const mapEmbedUrl = `https://www.google.com/maps?q=${encodedMapQuery}&output=embed`;
+  const savedMapUrl = String(contact.mapUrl || '').trim();
+  const hasVerifiedMapUrl = /^https?:\/\//i.test(savedMapUrl);
+  const mapLink = hasVerifiedMapUrl
+    ? savedMapUrl
+    : `https://www.google.com/maps/search/?api=1&query=${encodedMapQuery}`;
 
   const validate = () => {
     const errs = {};
@@ -69,8 +82,9 @@ export default function ContactPage() {
     return errs;
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
     const validationErrors = validate();
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors);
@@ -78,10 +92,53 @@ export default function ContactPage() {
     }
 
     setErrors({});
-    // Save to local demo database
-    const saved = addEnquiry(formData);
-    setSavedEnquiryId(saved.id);
-    setIsSubmitted(true);
+    setSubmitError('');
+    setEmailNotice('');
+    setIsSubmitting(true);
+
+    try {
+      // Save first so the admin inbox still receives the enquiry if email is unavailable.
+      const saved = await addEnquiry(formData);
+      setSavedEnquiryId(saved.id);
+
+      const accessKey = import.meta.env.VITE_WEB3FORMS_ACCESS_KEY?.trim();
+      if (accessKey) {
+        try {
+          const response = await fetch('https://api.web3forms.com/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({
+              access_key: accessKey,
+              name: formData.customerName.trim(),
+              phone: formData.phone.trim(),
+              email: formData.email.trim(),
+              subject: `Website enquiry: ${formData.enquiryType}`,
+              enquiry_type: formData.enquiryType,
+              product_or_service: formData.selectedProductOrService,
+              message: formData.message.trim(),
+              from_name: 'Muganiyaa-Mobiles Website'
+            })
+          });
+          const result = await response.json();
+          if (!response.ok || !result.success) throw new Error(result.message || 'Email notification failed.');
+          setEmailSent(true);
+        } catch (emailError) {
+          console.error('Enquiry was saved, but its email notification failed:', emailError);
+          setEmailSent(false);
+          setEmailNotice('Your enquiry is saved in the Admin Dashboard, but the email notification could not be sent.');
+        }
+      } else {
+        setEmailSent(false);
+        setEmailNotice('Your enquiry is saved in the Admin Dashboard. Email notifications are not configured yet.');
+      }
+
+      setIsSubmitted(true);
+    } catch (error) {
+      console.error('Could not submit enquiry:', error);
+      setSubmitError(error.message || 'We could not save your enquiry. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -171,15 +228,32 @@ export default function ContactPage() {
               </div>
             </div>
 
-            {/* Map Area / Details coming soon */}
-            <div className="card p-4 border rounded-4 text-center" style={{ backgroundColor: 'var(--secondary-bg)', borderColor: 'var(--border-color)' }}>
-              <div className="p-3 rounded-circle bg-white d-inline-block mx-auto mb-2 text-danger shadow-sm">
-                <MapPin size={28} />
+            {/* Map preview and verified showroom directions */}
+            <div className="card border rounded-4 overflow-hidden" style={{ borderColor: 'var(--border-color)' }}>
+              <div className="p-3 d-flex align-items-center justify-content-between gap-2">
+                <div>
+                  <h6 className="fw-bold text-dark mb-1">Store Location Map</h6>
+                  <p className="text-muted small mb-0">Map preview for {mapSearchQuery}</p>
+                </div>
+                <MapPin size={22} className="text-danger flex-shrink-0" />
               </div>
-              <h6 className="fw-bold text-dark mb-1">Store Location Map</h6>
-              <p className="text-muted small mb-0">
-                Interactive Google Map location link will be linked upon physical store verification.
-              </p>
+              <iframe
+                title="Muganiyaa-Mobiles showroom map"
+                src={mapEmbedUrl}
+                width="100%"
+                height="260"
+                style={{ border: 0 }}
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+                allowFullScreen
+              />
+              <div className="p-3">
+                <a href={mapLink} target="_blank" rel="noopener noreferrer" className="btn btn-outline-danger btn-sm w-100">
+                  <MapPin size={15} className="me-1" />
+                  {hasVerifiedMapUrl ? 'Open Verified Location in Google Maps' : 'Search This Address in Google Maps'}
+                </a>
+                {!hasVerifiedMapUrl && <small className="text-muted d-block mt-2">Add a verified Google Maps share link in Admin → Contact & Hours to link directly to the showroom pin.</small>}
+              </div>
             </div>
           </div>
 
@@ -193,11 +267,15 @@ export default function ContactPage() {
                   </div>
                   <h3 className="fw-bold text-dark mb-2">Enquiry Received!</h3>
                   <p className="text-muted small mb-4" style={{ maxWidth: '440px', margin: '0 auto' }}>
-                    Thank you, <strong>{formData.customerName}</strong>! Your enquiry has been saved to the shop's local inbox (ID: <code>{savedEnquiryId}</code>).
+                    Thank you, <strong>{formData.customerName}</strong>! Your enquiry has been received (ID: <code>{savedEnquiryId}</code>).
                   </p>
 
-                  <div className="alert alert-info py-2 px-3 small d-inline-block mb-4">
-                    <strong>Demo Notice:</strong> This enquiry is saved in your browser's local store and is viewable immediately in the <strong>Admin Enquiries</strong> panel. No real email or SMS was transmitted.
+                  <div className={`alert ${emailNotice ? 'alert-warning' : 'alert-success'} py-2 px-3 small d-inline-block mb-4`}>
+                    {isSupabaseConfigured
+                      ? 'Your enquiry is saved in the Supabase Admin Dashboard.'
+                      : 'Demo mode: your enquiry is saved in this browser only.'}
+                    {emailSent && ' An email notification was sent to the shop.'}
+                    {emailNotice && ` ${emailNotice}`}
                   </div>
 
                   <div>
@@ -206,6 +284,9 @@ export default function ContactPage() {
                       className="btn btn-brand-primary btn-sm px-4 py-2 me-2"
                       onClick={() => {
                         setIsSubmitted(false);
+                        setEmailSent(false);
+                        setEmailNotice('');
+                        setSubmitError('');
                         setFormData({
                           customerName: '',
                           phone: '',
@@ -235,6 +316,8 @@ export default function ContactPage() {
                   <p className="text-muted small mb-4">
                     Fill in your details below. For screen or hardware repairs, please include your phone model in the message.
                   </p>
+
+                  {submitError && <div className="alert alert-danger py-2 small" role="alert">{submitError}</div>}
 
                   <div className="row g-3">
                     {/* Customer Name */}
@@ -338,12 +421,14 @@ export default function ContactPage() {
 
                     {/* Submit Button & Disclosure */}
                     <div className="col-12 mt-4">
-                      <button type="submit" className="btn btn-brand-primary w-100 py-3 fw-bold d-flex align-items-center justify-content-center gap-2">
+                      <button type="submit" disabled={isSubmitting} className="btn btn-brand-primary w-100 py-3 fw-bold d-flex align-items-center justify-content-center gap-2">
                         <Send size={18} />
-                        <span>Submit Store Enquiry</span>
+                        <span>{isSubmitting ? 'Submitting…' : 'Submit Store Enquiry'}</span>
                       </button>
                       <small className="text-muted d-block text-center mt-2" style={{ fontSize: '0.75rem' }}>
-                        *Notice: This is a client demo prototype. Submitted data is stored locally in this browser's demo store.
+                        {isSupabaseConfigured
+                          ? 'Your enquiry will be saved securely for the Admin Dashboard. We may also email the shop.'
+                          : '*Notice: Demo mode stores enquiries only in this browser until Supabase is configured.'}
                       </small>
                     </div>
                   </div>

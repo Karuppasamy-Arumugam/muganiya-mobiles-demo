@@ -1,867 +1,384 @@
-import React, {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useMemo
-} from 'react';
-import {
-  loadDatabase,
-  saveDatabase,
-  resetDatabase
-} from '../services/storageService';
-import { supabase } from '../services/supabaseClient';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
+import { loadDatabase, saveDatabase, resetDatabase } from '../services/storageService';
+import { fetchSupabaseCatalog } from '../services/supabaseCatalogService';
+import { isSupabaseConfigured, supabase } from '../services/supabaseClient';
 
 const DataContext = createContext(null);
 
-const mapOfferFromDatabase = (row) => ({
-  id: row.id,
-  title: row.title || '',
-  description: row.description || '',
-  type: row.offer_type || 'Shop Discount',
-  badgeText: row.badge_text || '',
-  provider: row.provider || '',
-  discountAmount: Number(row.discount_value || 0),
-  minPurchase: Number(row.min_purchase || 0),
-  tenureOptions: row.tenure_options || '',
-  downPayment: row.down_payment || '',
-  processingFee: row.processing_fee || '',
-  startDate: row.start_at ? String(row.start_at).slice(0, 10) : '',
-  endDate: row.end_at ? String(row.end_at).slice(0, 10) : '',
-  status: row.is_active ? 'active' : 'expired',
-  terms: row.terms || ''
-});
+function mapStoreSettings(row, fallback = {}) {
+  const openingHours = row?.opening_hours;
+  const hoursText = typeof openingHours === 'string'
+    ? openingHours
+    : openingHours?.display || fallback.hours || '';
 
-const mapOfferToDatabase = (offer) => ({
-  title: String(offer.title || '').trim(),
-  description: String(offer.description || '').trim(),
-  offer_type: offer.type || 'Shop Discount',
-  badge_text: offer.badgeText || '',
-  provider: offer.provider || '',
-  discount_value: Number(offer.discountAmount || 0),
-  min_purchase: Number(offer.minPurchase || 0),
-  tenure_options: offer.tenureOptions || '',
-  down_payment: offer.downPayment || '',
-  processing_fee: offer.processingFee || '',
-  start_at: offer.startDate ? new Date(`${offer.startDate}T00:00:00`).toISOString() : null,
-  end_at: offer.endDate ? new Date(`${offer.endDate}T23:59:59`).toISOString() : null,
-  terms: offer.terms || '',
-  is_active: offer.status === 'active'
-});
+  return {
+    ...fallback,
+    shopName: row?.store_name || fallback.shopName || 'Muganiyaa-Mobiles',
+    phone: row?.phone ?? fallback.phone ?? '',
+    whatsapp: row?.whatsapp ?? fallback.whatsapp ?? '',
+    email: row?.email ?? fallback.email ?? '',
+    address: row?.address ?? fallback.address ?? '',
+    hours: hoursText,
+    mapQuery: openingHours?.map_query || fallback.mapQuery || row?.address || '',
+    mapUrl: row?.map_url || ''
+  };
+}
+
+function mapSupabaseEnquiry(row) {
+  const [enquiryType, ...itemParts] = String(row.subject || 'General Enquiry').split(' — ');
+  const statusLabels = { new: 'New', contacted: 'In Progress', resolved: 'Handled', archived: 'Handled' };
+  return {
+    id: row.id,
+    customerName: row.name,
+    phone: row.phone,
+    email: row.email || '',
+    enquiryType: enquiryType || 'General Enquiry',
+    selectedProductOrService: itemParts.join(' — '),
+    message: row.message,
+    createdAt: row.created_at,
+    status: statusLabels[row.internal_status] || 'New',
+    notes: row.internal_notes || '',
+    repairProgress: 'Not Applicable'
+  };
+}
+
+function toSupabaseEnquiryStatus(status) {
+  return ({ New: 'new', 'In Progress': 'contacted', Handled: 'resolved' })[status] || 'new';
+}
 
 export function DataProvider({ children }) {
-  const [db, setDb] = useState(() => loadDatabase());
+  const [db, setDb] = useState(() => {
+    const saved = loadDatabase();
+    // In Supabase mode, do not display the old local/demo catalogue while fetching.
+    return isSupabaseConfigured ? { ...saved, products: [], categories: [] } : saved;
+  });
 
-  // Keep the app's local browser data in sync with its current state.
+  // Load public catalogue rows from local Supabase when local credentials exist.
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let cancelled = false;
+    fetchSupabaseCatalog(loadDatabase())
+      .then((catalogue) => {
+        if (catalogue && !cancelled) setDb((current) => ({ ...current, ...catalogue }));
+      })
+      .catch((error) => console.error('Could not load catalogue from Supabase:', error.message));
+    return () => { cancelled = true; };
+  }, []);
+
+  // Load enquiries into the admin inbox and keep it updated when new submissions arrive.
+  useEffect(() => {
+    if (!supabase) return undefined;
+    let cancelled = false;
+
+    const loadEnquiries = async () => {
+      const { data, error } = await supabase
+        .from('enquiries')
+        .select('id, name, phone, email, subject, message, internal_status, internal_notes, created_at')
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      if (!cancelled) {
+        setDb((current) => ({ ...current, enquiries: (data || []).map(mapSupabaseEnquiry) }));
+      }
+    };
+
+    const refreshEnquiries = () => {
+      loadEnquiries().catch((error) => console.error('Could not load enquiries from Supabase:', error.message));
+    };
+    refreshEnquiries();
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session && ['INITIAL_SESSION', 'SIGNED_IN', 'TOKEN_REFRESHED'].includes(event)) {
+        // Defer the request so it runs after Supabase finishes updating its auth state.
+        setTimeout(() => { if (!cancelled) refreshEnquiries(); }, 0);
+      }
+    });
+    const channel = supabase
+      .channel('enquiries-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'enquiries' }, (payload) => {
+        if (cancelled) return;
+        setDb((current) => {
+          const rows = current.enquiries || [];
+          if (payload.eventType === 'DELETE') {
+            return { ...current, enquiries: rows.filter((item) => item.id !== payload.old.id) };
+          }
+          const item = mapSupabaseEnquiry(payload.new);
+          const exists = rows.some((row) => row.id === item.id);
+          return {
+            ...current,
+            enquiries: exists
+              ? rows.map((row) => row.id === item.id ? item : row)
+              : [item, ...rows]
+          };
+        });
+      })
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      authListener.subscription.unsubscribe();
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Keep showroom/contact settings synced from Supabase and live changes.
+  useEffect(() => {
+    if (!supabase) return undefined;
+    let cancelled = false;
+
+    const applyStoreSettings = (row) => {
+      if (!row) return;
+      setDb((current) => ({
+        ...current,
+        contactSettings: mapStoreSettings(row, current.contactSettings)
+      }));
+    };
+
+    supabase
+      .from('store_settings')
+      .select('id, store_name, phone, whatsapp, email, address, opening_hours, map_url')
+      .eq('id', true)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (error) throw error;
+        if (!cancelled) applyStoreSettings(data);
+      })
+      .catch((error) => console.error('Could not load showroom settings from Supabase:', error.message));
+
+    const channel = supabase
+      .channel('store-settings-live')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'store_settings'
+      }, (payload) => {
+        if (!cancelled && payload.new?.id === true) applyStoreSettings(payload.new);
+      })
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          console.error('Live showroom settings updates could not be connected.');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Save changes to localStorage whenever db changes
   useEffect(() => {
     saveDatabase(db);
   }, [db]);
 
-  // Load products and their related records from Supabase.
-  useEffect(() => {
-    if (!supabase) return undefined;
-
-    let cancelled = false;
-
-    async function loadProductsFromSupabase() {
-      const [
-        { data: categories, error: categoryError },
-        { data: products, error: productError },
-        { data: specificationRows, error: specificationError },
-        { data: imageRows, error: imageError },
-        { data: variantRows, error: variantError },
-        { data: productOfferRows, error: productOfferError },
-        { data: offerRows, error: offerError }
-      ] = await Promise.all([
-        supabase.from('categories').select('id, name, slug'),
-        supabase
-          .from('products')
-          .select(
-            'id, category_id, name, slug, brand, description, base_price, status, is_active, is_featured, highlights, model, tagline, original_price, is_latest_launch, is_best_seller, badges'
-          )
-          .order('name'),
-        supabase
-          .from('product_specifications')
-          .select('product_id, group_name, name, value, sort_order')
-          .order('sort_order'),
-        supabase
-          .from('product_images')
-          .select('product_id, storage_path, sort_order, is_primary')
-          .order('sort_order'),
-        supabase
-          .from('product_variants')
-          .select(
-            'id, product_id, sku, color_name, color_hex, ram, storage, variant_attributes, price, original_price, stock_quantity, is_available'
-          ),
-        supabase.from('product_offers').select('product_id, offer_id'),
-        supabase.from('offers').select('*').order('created_at', { ascending: false })
-      ]);
-
-      if (categoryError) throw categoryError;
-      if (productError) throw productError;
-      if (specificationError) throw specificationError;
-      if (imageError) throw imageError;
-      if (variantError) throw variantError;
-      if (productOfferError) throw productOfferError;
-      if (offerError) throw offerError;
-      if (cancelled) return;
-
-      const categoryById = new Map(
-        (categories || []).map((category) => [category.id, category])
-      );
-
-      const specificationsByProductId = new Map();
-      for (const row of specificationRows || []) {
-        const entry = specificationsByProductId.get(row.product_id) || {
-          values: {},
-          groupName: row.group_name || ''
-        };
-        entry.values[row.name] = row.value;
-        specificationsByProductId.set(row.product_id, entry);
-      }
-
-      const imagesByProductId = new Map();
-      for (const row of imageRows || []) {
-        const images = imagesByProductId.get(row.product_id) || [];
-        images.push(row);
-        imagesByProductId.set(row.product_id, images);
-      }
-
-      const variantsByProductId = new Map();
-      for (const row of variantRows || []) {
-        const variants = variantsByProductId.get(row.product_id) || [];
-        variants.push(row);
-        variantsByProductId.set(row.product_id, variants);
-      }
-
-      const offersByProductId = new Map();
-      for (const row of productOfferRows || []) {
-        const offerIds = offersByProductId.get(row.product_id) || [];
-        offerIds.push(row.offer_id);
-        offersByProductId.set(row.product_id, offerIds);
-      }
-
-      setDb((previousDb) => {
-        const localProductBySlug = new Map(
-          (previousDb.products || []).map((product) => [product.slug, product])
-        );
-
-        const loadedProducts = (products || []).map((row) => {
-          const category = categoryById.get(row.category_id);
-          const localProduct = localProductBySlug.get(row.slug);
-          const productImages = imagesByProductId.get(row.id) || [];
-          const savedVariants = variantsByProductId.get(row.id) || [];
-          const savedSpecifications =
-            specificationsByProductId.get(row.id);
-
-          const imageUrls = productImages
-            .map((image) => image.storage_path)
-            .filter(Boolean);
-
-          const variants = savedVariants.map((variant) => {
-            const localVariant = (localProduct?.variants || []).find(
-              (item) => item.sku === variant.sku
-            );
-
-            return {
-              ...localVariant,
-              id: variant.id,
-              sku: variant.sku || '',
-              color: variant.color_name || '',
-              ram: variant.ram || '',
-              storage: variant.storage || '',
-              variantAttributes: variant.variant_attributes || {},
-              sellingPrice: Number(variant.price || 0),
-              originalPrice: Number(
-                variant.original_price ?? localVariant?.originalPrice ?? variant.price ?? 0
-              ),
-              stockStatus:
-                variant.is_available && variant.stock_quantity > 0
-                  ? 'In Stock'
-                  : 'Out of Stock'
-            };
-          });
-
-          const colors = [
-            ...new Map(
-              savedVariants
-                .filter((variant) => variant.color_name)
-                .map((variant) => [
-                  variant.color_name,
-                  {
-                    name: variant.color_name,
-                    hex: variant.color_hex || '#000000'
-                  }
-                ])
-            ).values()
-          ];
-
-          const specEntry = savedSpecifications;
-
-          return {
-            ...localProduct,
-            id: row.id,
-            name: row.name,
-            slug: row.slug,
-            brand: row.brand || '',
-            model: row.model || '',
-            tagline: row.tagline || '',
-            description: row.description || '',
-            category: category?.name || localProduct?.category || '',
-            categorySlug: category?.slug || localProduct?.categorySlug || '',
-            sellingPrice: Number(row.base_price || 0),
-            originalPrice:
-              row.original_price == null
-                ? Number(row.base_price || 0)
-                : Number(row.original_price),
-            status:
-              row.status === 'active' && row.is_active
-                ? 'published'
-                : row.status,
-            isFeatured: Boolean(row.is_featured),
-            isLatestLaunch: Boolean(row.is_latest_launch),
-            isBestSeller: Boolean(row.is_best_seller),
-            badges: row.badges || [],
-            highlights: row.highlights || [],
-            images: imageUrls.length ? imageUrls : localProduct?.images || [],
-            coverImage:
-              productImages.find((image) => image.is_primary)?.storage_path ||
-              imageUrls[0] ||
-              localProduct?.coverImage ||
-              '',
-            variants: variants.length ? variants : localProduct?.variants || [],
-            colors: colors.length ? colors : localProduct?.colors || [],
-            ramOptions: [
-              ...new Set(savedVariants.map((variant) => variant.ram).filter(Boolean))
-            ],
-            storageOptions: [
-              ...new Set(savedVariants.map((variant) => variant.storage).filter(Boolean))
-            ],
-            offers: offersByProductId.get(row.id) || [],
-            specsType:
-              specEntry?.groupName || localProduct?.specsType || 'phone',
-            specifications:
-              specEntry?.values || localProduct?.specifications || {}
-          };
-        });
-
-        return {
-          ...previousDb,
-          categories: categories || previousDb.categories || [],
-          products: loadedProducts,
-          offers: (offerRows || []).map(mapOfferFromDatabase)
-        };
-      });
-    }
-
-    loadProductsFromSupabase().catch((error) => {
-      console.error('Could not load products from Supabase:', error);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Public filtered helpers
+  // Public Filtered Helpers
   const publishedProducts = useMemo(() => {
-    return (db.products || []).filter((product) => product.status === 'published');
+    return (db.products || []).filter((p) => p.status === 'published');
   }, [db.products]);
 
   const activeOffers = useMemo(() => {
-    return (db.offers || []).filter((offer) => offer.status === 'active');
+    return (db.offers || []).filter((o) => o.status === 'active');
   }, [db.offers]);
 
-  // Product actions
-  const addProduct = async (newProduct) => {
-    if (!supabase) throw new Error('Supabase is not configured.');
-    const { data: category, error: categoryError } = await supabase
-      .from('categories')
-      .select('id')
-      .eq('slug', newProduct.categorySlug)
-      .single();
-
-    if (categoryError) {
-      throw categoryError;
-    }
-
-    const isPublished = newProduct.status === 'published';
-    const slug =
-      newProduct.slug ||
-      newProduct.name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/(^-|-$)/g, '');
-
-    const { data, error } = await supabase
-      .from('products')
-      .insert({
-        category_id: category.id,
-        name: newProduct.name,
-        slug,
-        brand: newProduct.brand || '',
-        model: newProduct.model || null,
-        tagline: newProduct.tagline || null,
-        description: newProduct.description || '',
-        base_price: Number(newProduct.sellingPrice || 0),
-        original_price: Number(newProduct.originalPrice ?? newProduct.sellingPrice ?? 0),
-        is_latest_launch: Boolean(newProduct.isLatestLaunch),
-        is_best_seller: Boolean(newProduct.isBestSeller),
-        badges: newProduct.badges || [],
-        status: isPublished ? 'active' : 'draft',
-        is_active: isPublished,
-        is_featured: Boolean(newProduct.isFeatured),
-        highlights: (newProduct.highlights || []).filter(Boolean)
-      })
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
-
-    const variantRows = (newProduct.variants || []).map((variant) => {
-      const isAvailable = variant.stockStatus !== 'Out of Stock';
-      const color = (newProduct.colors || []).find(
-        (item) => item.name === variant.color
-      );
-
-      return {
-        product_id: data.id,
-        sku: variant.sku || null,
-        color_name: variant.color || null,
-        color_hex: color?.hex || null,
-        ram: variant.ram || null,
-        storage: variant.storage || null,
-        variant_attributes: variant.variantAttributes || {},
-        price: Number(variant.sellingPrice ?? newProduct.sellingPrice ?? 0),
-        original_price: Number(
-          variant.originalPrice ?? newProduct.originalPrice ?? variant.sellingPrice ?? 0
-        ),
-        stock_quantity: isAvailable ? 1 : 0,
-        is_available: isAvailable
-      };
-    });
-
-    if (variantRows.length > 0) {
-      const { error: variantError } = await supabase
-        .from('product_variants')
-        .insert(variantRows);
-
-      if (variantError) {
-        const { error: rollbackError } = await supabase
-          .from('products')
-          .delete()
-          .eq('id', data.id);
-
-        if (rollbackError) {
-          console.error('Could not remove product after variant save failed:', rollbackError);
-        }
-
-        throw variantError;
-      }
-    }
-    const specificationRows = Object.entries(
-      newProduct.specifications || {}
-    )
-      .filter(([, value]) => String(value ?? '').trim())
-      .map(([name, value], index) => ({
-        product_id: data.id,
-        group_name: newProduct.specsType || null,
-        name,
-        value: String(value).trim(),
-        sort_order: index
-      }));
-
-    if (specificationRows.length > 0) {
-      const { error: specificationSaveError } = await supabase
-        .from('product_specifications')
-        .insert(specificationRows);
-
-      if (specificationSaveError) {
-        const { error: rollbackError } = await supabase
-          .from('products')
-          .delete()
-          .eq('id', data.id);
-
-        if (rollbackError) {
-          console.error('Could not remove product after specification save failed:', rollbackError);
-        }
-
-        throw specificationSaveError;
-      }
-    }
-
-    const imageUrls = [
-      ...new Set(
-        [
-          newProduct.coverImage,
-          ...(newProduct.images || [])
-        ].filter((image) => typeof image === 'string' && image.trim())
-      )
-    ];
-
-    const imageRows = imageUrls.map((url, index) => ({
-      product_id: data.id,
-      storage_path: url,
-      alt_text: newProduct.name,
-      sort_order: index,
-      is_primary: url === newProduct.coverImage
-    }));
-
-    if (imageRows.length > 0) {
-      const { error: imageSaveError } = await supabase
-        .from('product_images')
-        .insert(imageRows);
-
-      if (imageSaveError) {
-        const { error: rollbackError } = await supabase
-          .from('products')
-          .delete()
-          .eq('id', data.id);
-
-        if (rollbackError) {
-          console.error(
-            'Could not remove product after image save failed:',
-            rollbackError
-          );
-        }
-
-        throw imageSaveError;
-      }
-    }
-
-    const offerRows = [
-      ...new Set(newProduct.offers || [])
-    ].map((offerId) => ({
-      product_id: data.id,
-      offer_id: offerId
-    }));
-
-    if (offerRows.length > 0) {
-      const { error: offerSaveError } = await supabase
-        .from('product_offers')
-        .insert(offerRows);
-
-      if (offerSaveError) {
-        const { error: rollbackError } = await supabase
-          .from('products')
-          .delete()
-          .eq('id', data.id);
-
-        if (rollbackError) {
-          console.error('Could not remove product after offer save failed:', rollbackError);
-        }
-
-        throw offerSaveError;
-      }
-    }
+  // Product Actions
+  const addProduct = (newProduct) => {
     const productWithId = {
       ...newProduct,
-      id: data.id,
-      slug: slug,
-      createdAt: data.created_at,
-      updatedAt: data.updated_at
+      id: newProduct.id || `prod-${Date.now()}`,
+      slug: newProduct.slug || newProduct.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
+      createdAt: new Date().toISOString()
     };
-
-    setDb((previousDb) => ({
-      ...previousDb,
-      products: [productWithId, ...(previousDb.products || [])]
+    setDb((prev) => ({
+      ...prev,
+      products: [productWithId, ...prev.products]
     }));
-
     return productWithId;
   };
 
-  const updateProduct = async (id, updates) => {
-    if (!supabase) {
-      throw new Error('Supabase is not configured.');
-    }
-
-    const currentProduct = (db.products || []).find((product) => product.id === id);
-    if (!currentProduct) {
-      throw new Error('Could not find this product in the current catalogue.');
-    }
-
-    // Merge partial updates too; the visibility toggle only sends { status }.
-    const product = { ...currentProduct, ...updates };
-
-    const { data: category, error: categoryError } = await supabase
-      .from('categories')
-      .select('id')
-      .eq('slug', product.categorySlug)
-      .single();
-
-    if (categoryError) throw categoryError;
-
-    const slug =
-      product.slug ||
-      product.name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/(^-|-$)/g, '');
-    const isPublished = product.status === 'published';
-
-    const { error: productError } = await supabase
-      .from('products')
-      .update({
-        category_id: category.id,
-        name: product.name,
-        slug,
-        brand: product.brand || '',
-        model: product.model || null,
-        tagline: product.tagline || null,
-        description: product.description || '',
-        base_price: Number(product.sellingPrice || 0),
-        original_price: Number(
-          product.originalPrice ?? product.sellingPrice ?? 0
-        ),
-        status: isPublished ? 'active' : 'draft',
-        is_active: isPublished,
-        is_featured: Boolean(product.isFeatured),
-        is_latest_launch: Boolean(product.isLatestLaunch),
-        is_best_seller: Boolean(product.isBestSeller),
-        badges: product.badges || [],
-        highlights: (product.highlights || []).filter(Boolean)
-      })
-      .eq('id', id);
-
-    if (productError) throw productError;
-
-    const replaceRelatedRows = async (table, rows) => {
-      const { error: deleteError } = await supabase
-        .from(table)
-        .delete()
-        .eq('product_id', id);
-
-      if (deleteError) throw deleteError;
-
-      if (rows.length > 0) {
-        const { error: insertError } = await supabase
-          .from(table)
-          .insert(rows);
-
-        if (insertError) throw insertError;
-      }
-    };
-
-    if (Object.prototype.hasOwnProperty.call(updates, 'variants')) {
-      const variantRows = (product.variants || []).map((variant) => {
-        const color = (product.colors || []).find(
-          (item) => item.name === variant.color
-        );
-        const isAvailable = variant.stockStatus !== 'Out of Stock';
-
-        return {
-          product_id: id,
-          sku: variant.sku || null,
-          color_name: variant.color || null,
-          color_hex: color?.hex || null,
-          ram: variant.ram || null,
-          storage: variant.storage || null,
-          variant_attributes: variant.variantAttributes || {},
-          price: Number(variant.sellingPrice ?? product.sellingPrice ?? 0),
-          original_price: Number(
-            variant.originalPrice ?? product.originalPrice ?? 0
-          ),
-          stock_quantity: isAvailable ? 1 : 0,
-          is_available: isAvailable
-        };
-      });
-
-      await replaceRelatedRows('product_variants', variantRows);
-    }
-
-    if (Object.prototype.hasOwnProperty.call(updates, 'specifications')) {
-      const specificationRows = Object.entries(product.specifications || {})
-        .filter(([, value]) => String(value ?? '').trim())
-        .map(([name, value], index) => ({
-          product_id: id,
-          group_name: product.specsType || null,
-          name,
-          value: String(value).trim(),
-          sort_order: index
-        }));
-
-      await replaceRelatedRows('product_specifications', specificationRows);
-    }
-
-    if (
-      Object.prototype.hasOwnProperty.call(updates, 'images') ||
-      Object.prototype.hasOwnProperty.call(updates, 'coverImage')
-    ) {
-      const imageUrls = [
-        ...new Set(
-          [product.coverImage, ...(product.images || [])].filter(
-            (image) => typeof image === 'string' && image.trim()
-          )
-        )
-      ];
-      const imageRows = imageUrls.map((url, index) => ({
-        product_id: id,
-        storage_path: url,
-        alt_text: product.name,
-        sort_order: index,
-        is_primary: url === product.coverImage
-      }));
-
-      await replaceRelatedRows('product_images', imageRows);
-    }
-
-    if (Object.prototype.hasOwnProperty.call(updates, 'offers')) {
-      const offerRows = [
-        ...new Set(product.offers || [])
-      ].map((offerId) => ({
-        product_id: id,
-        offer_id: offerId
-      }));
-
-      await replaceRelatedRows('product_offers', offerRows);
-    }
-
-    const updatedProduct = {
-      ...product,
-      id,
-      slug,
-      status: isPublished ? 'published' : 'draft',
-      updatedAt: new Date().toISOString()
-    };
-
-    setDb((previousDb) => ({
-      ...previousDb,
-      products: (previousDb.products || []).map((item) =>
-        item.id === id ? updatedProduct : item
-      )
+  const updateProduct = (id, updates) => {
+    setDb((prev) => ({
+      ...prev,
+      products: prev.products.map((p) => (p.id === id ? { ...p, ...updates, updatedAt: new Date().toISOString() } : p))
     }));
-
-    return updatedProduct;
   };
 
-  const deleteProduct = async (id) => {
-    if (!supabase) {
-      throw new Error('Supabase is not configured.');
-    }
-
-    const { data: imageRows, error: imageError } = await supabase
-      .from('product_images')
-      .select('storage_path')
-      .eq('product_id', id);
-
-    if (imageError) throw imageError;
-
-    const { error: deleteError } = await supabase
-      .from('products')
-      .delete()
-      .eq('id', id)
-      .select('id')
-      .single();
-
-    if (deleteError) throw deleteError;
-
-    // The database foreign keys cascade-delete variants, specifications,
-    // image rows, and offer links when the product row is deleted.
-    setDb((previousDb) => ({
-      ...previousDb,
-      products: (previousDb.products || []).filter(
-        (product) => product.id !== id
-      )
+  const deleteProduct = (id) => {
+    setDb((prev) => ({
+      ...prev,
+      products: prev.products.filter((p) => p.id !== id)
     }));
-
-    const objectPaths = [
-      ...new Set(
-        (imageRows || [])
-          .map((row) => {
-            const storagePath = row.storage_path;
-            if (!storagePath) return null;
-
-            try {
-              const parsedUrl = new URL(storagePath);
-              const marker =
-                '/storage/v1/object/public/product-images/';
-              const markerIndex = parsedUrl.pathname.indexOf(marker);
-
-              if (markerIndex === -1) return null;
-
-              return decodeURIComponent(
-                parsedUrl.pathname.slice(markerIndex + marker.length)
-              );
-            } catch {
-              // Also support rows containing a relative object path.
-              return /^https?:\/\//i.test(storagePath)
-                ? null
-                : storagePath.replace(/^\/+/, '');
-            }
-          })
-          .filter((path) => path && path.startsWith('products/'))
-      )
-    ];
-
-    if (objectPaths.length === 0) return { success: true };
-
-    try {
-      const { error: storageError } = await supabase.storage
-        .from('product-images')
-        .remove(objectPaths);
-
-      if (storageError) {
-        console.error('Product deleted, but image cleanup failed:', storageError);
-        return {
-          success: true,
-          storageCleanupWarning:
-            'The product was deleted, but some image files could not be removed from Supabase Storage.'
-        };
-      }
-    } catch (storageError) {
-      console.error('Product deleted, but image cleanup failed:', storageError);
-      return {
-        success: true,
-        storageCleanupWarning:
-          'The product was deleted, but some image files could not be removed from Supabase Storage.'
-      };
-    }
-
-    return { success: true };
   };
 
-  // Category actions
+  // Category Actions
   const addCategory = (category) => {
-    const newCategory = {
+    const newCat = {
       ...category,
       id: category.id || `cat-${Date.now()}`,
-      slug:
-        category.slug ||
-        category.name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/(^-|-$)/g, '')
+      slug: category.slug || category.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
     };
-
-    setDb((previousDb) => ({
-      ...previousDb,
-      categories: [...(previousDb.categories || []), newCategory]
+    setDb((prev) => ({
+      ...prev,
+      categories: [...prev.categories, newCat]
     }));
   };
 
   const updateCategory = (id, updates) => {
-    setDb((previousDb) => ({
-      ...previousDb,
-      categories: (previousDb.categories || []).map((category) =>
-        category.id === id ? { ...category, ...updates } : category
-      )
+    setDb((prev) => ({
+      ...prev,
+      categories: prev.categories.map((c) => (c.id === id ? { ...c, ...updates } : c))
     }));
   };
 
   const deleteCategory = (id) => {
-    setDb((previousDb) => ({
-      ...previousDb,
-      categories: (previousDb.categories || []).filter(
-        (category) => category.id !== id
-      )
+    setDb((prev) => ({
+      ...prev,
+      categories: prev.categories.filter((c) => c.id !== id)
     }));
   };
 
-  // Offer actions
-  const addOffer = async (offer) => {
-    if (!supabase) throw new Error('Supabase is not configured.');
-    const { data, error } = await supabase.from('offers')
-      .insert(mapOfferToDatabase(offer)).select('*').single();
-    if (error) throw error;
-    const savedOffer = mapOfferFromDatabase(data);
-    setDb((previousDb) => ({ ...previousDb, offers: [savedOffer, ...(previousDb.offers || [])] }));
-    return savedOffer;
-  };
-
-  const updateOffer = async (id, updates) => {
-    if (!supabase) throw new Error('Supabase is not configured.');
-    const existing = (db.offers || []).find((offer) => offer.id === id);
-    if (!existing) throw new Error('Could not find this offer in Supabase. Reload the page and try again.');
-    const { data, error } = await supabase.from('offers')
-      .update(mapOfferToDatabase({ ...existing, ...updates }))
-      .eq('id', id).select('*').single();
-    if (error) throw error;
-    const savedOffer = mapOfferFromDatabase(data);
-    setDb((previousDb) => ({
-      ...previousDb,
-      offers: (previousDb.offers || []).map((offer) => offer.id === id ? savedOffer : offer)
-    }));
-    return savedOffer;
-  };
-
-  const deleteOffer = async (id) => {
-    if (!supabase) throw new Error('Supabase is not configured.');
-    const { error } = await supabase.from('offers').delete().eq('id', id);
-    if (error) throw error;
-    setDb((previousDb) => ({
-      ...previousDb,
-      offers: (previousDb.offers || []).filter((offer) => offer.id !== id)
+  // Offer Actions
+  const addOffer = (offer) => {
+    const newOffer = {
+      ...offer,
+      id: offer.id || `off-${Date.now()}`
+    };
+    setDb((prev) => ({
+      ...prev,
+      offers: [newOffer, ...prev.offers]
     }));
   };
 
-  // Banner actions
+  const updateOffer = (id, updates) => {
+    setDb((prev) => ({
+      ...prev,
+      offers: prev.offers.map((o) => (o.id === id ? { ...o, ...updates } : o))
+    }));
+  };
+
+  const deleteOffer = (id) => {
+    setDb((prev) => ({
+      ...prev,
+      offers: prev.offers.filter((o) => o.id !== id)
+    }));
+  };
+
+  // Banner Actions
   const updateBanners = (banners) => {
-    setDb((previousDb) => ({ ...previousDb, banners }));
+    setDb((prev) => ({ ...prev, banners }));
   };
 
-  // Service actions
+  // Service Actions
   const updateServices = (services) => {
-    setDb((previousDb) => ({ ...previousDb, services }));
+    setDb((prev) => ({ ...prev, services }));
   };
 
-  // Content and settings actions
+  // Content & Settings Actions
   const updateWebsiteContent = (websiteContent) => {
-    setDb((previousDb) => ({ ...previousDb, websiteContent }));
+    setDb((prev) => ({ ...prev, websiteContent }));
   };
 
-  const updateContactSettings = (contactSettings) => {
-    setDb((previousDb) => ({ ...previousDb, contactSettings }));
+  const updateContactSettings = async (contactSettings) => {
+    if (!supabase) throw new Error('Supabase is not configured. Contact settings were not saved.');
+
+    const openingHours = {
+      display: contactSettings.hours || '',
+      map_query: contactSettings.mapQuery || ''
+    };
+    const { data, error } = await supabase
+      .from('store_settings')
+      .upsert({
+        id: true,
+        store_name: contactSettings.shopName || 'Muganiyaa-Mobiles',
+        phone: contactSettings.phone || '',
+        whatsapp: contactSettings.whatsapp || '',
+        email: contactSettings.email || '',
+        address: contactSettings.address || '',
+        opening_hours: openingHours,
+        map_url: contactSettings.mapUrl || '',
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' })
+      .select('id, store_name, phone, whatsapp, email, address, opening_hours, map_url')
+      .single();
+
+    if (error) throw error;
+    const savedSettings = mapStoreSettings(data, contactSettings);
+    setDb((prev) => ({ ...prev, contactSettings: savedSettings }));
+    return savedSettings;
   };
 
   const updateChatbotSettings = (chatbotSettings) => {
-    setDb((previousDb) => ({ ...previousDb, chatbotSettings }));
+    setDb((prev) => ({ ...prev, chatbotSettings }));
   };
 
-  // Enquiry actions
-  const addEnquiry = (enquiry) => {
+  // Enquiries Actions
+  const addEnquiry = async (enquiry) => {
+    if (supabase) {
+      const subject = [enquiry.enquiryType || 'General Enquiry', enquiry.selectedProductOrService]
+        .filter(Boolean)
+        .join(' — ');
+      const { data, error } = await supabase
+        .from('enquiries')
+        .insert({
+          name: enquiry.customerName.trim(),
+          phone: enquiry.phone.trim(),
+          email: enquiry.email?.trim() || null,
+          subject,
+          message: enquiry.message.trim()
+        })
+        .select('id, name, phone, email, subject, message, internal_status, internal_notes, created_at')
+        .single();
+
+      if (error) throw error;
+      const savedEnquiry = mapSupabaseEnquiry(data);
+      setDb((prev) => ({
+        ...prev,
+        enquiries: [savedEnquiry, ...(prev.enquiries || []).filter((row) => row.id !== savedEnquiry.id)]
+      }));
+      return savedEnquiry;
+    }
+
     const newEnquiry = {
       ...enquiry,
       id: `enq-${Date.now()}`,
       createdAt: new Date().toISOString(),
       status: 'New',
       notes: '',
-      repairProgress: enquiry.enquiryType?.includes('Repair')
-        ? 'Received'
-        : 'Not Applicable'
+      repairProgress: enquiry.enquiryType?.includes('Repair') ? 'Received' : 'Not Applicable'
     };
-
-    setDb((previousDb) => ({
-      ...previousDb,
-      enquiries: [newEnquiry, ...(previousDb.enquiries || [])]
+    setDb((prev) => ({
+      ...prev,
+      enquiries: [newEnquiry, ...prev.enquiries]
     }));
-
     return newEnquiry;
   };
 
-  const updateEnquiry = (id, updates) => {
-    setDb((previousDb) => ({
-      ...previousDb,
-      enquiries: (previousDb.enquiries || []).map((enquiry) =>
-        enquiry.id === id ? { ...enquiry, ...updates } : enquiry
-      )
+  const updateEnquiry = async (id, updates) => {
+    if (supabase && (updates.status || updates.notes !== undefined)) {
+      const payload = {};
+      if (updates.status) payload.internal_status = toSupabaseEnquiryStatus(updates.status);
+      if (updates.notes !== undefined) payload.internal_notes = updates.notes;
+      const { error } = await supabase.from('enquiries').update(payload).eq('id', id);
+      if (error) throw error;
+    }
+    setDb((prev) => ({
+      ...prev,
+      enquiries: prev.enquiries.map((e) => (e.id === id ? { ...e, ...updates } : e))
     }));
   };
 
-  const deleteEnquiry = (id) => {
-    setDb((previousDb) => ({
-      ...previousDb,
-      enquiries: (previousDb.enquiries || []).filter(
-        (enquiry) => enquiry.id !== id
-      )
+  const deleteEnquiry = async (id) => {
+    if (supabase) {
+      const { error } = await supabase.from('enquiries').delete().eq('id', id);
+      if (error) throw error;
+    }
+    setDb((prev) => ({
+      ...prev,
+      enquiries: prev.enquiries.filter((e) => e.id !== id)
     }));
   };
 
   // Reset to default sample seed data
   const handleResetData = () => {
-    const freshDatabase = resetDatabase();
-    setDb(freshDatabase);
+    const fresh = resetDatabase();
+    setDb(fresh);
   };
 
   const value = {
@@ -888,20 +405,13 @@ export function DataProvider({ children }) {
     resetData: handleResetData
   };
 
-  return (
-    <DataContext.Provider value={value}>
-      {children}
-    </DataContext.Provider>
-  );
+  return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
 
 export function useData() {
   const context = useContext(DataContext);
-
   if (!context) {
     throw new Error('useData must be used within a DataProvider');
   }
-
   return context;
 }
-

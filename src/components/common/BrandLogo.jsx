@@ -12,7 +12,7 @@ export default function BrandLogo({ size = 'default', light = false }) {
   return (
     <Link
       to="/"
-      className="d-inline-flex align-items-center gap-2 text-decoration-none"
+      className="brand-logo d-inline-flex align-items-center gap-2 text-decoration-none"
       aria-label="Muganiyaa-Mobiles Home"
     >
       {/* Logo Image */}
@@ -30,6 +30,7 @@ export default function BrandLogo({ size = 'default', light = false }) {
       {/* Wordmark */}
       <div className="d-flex flex-column justify-content-center">
         <div
+          className="brand-logo-wordmark"
           style={{
             fontFamily: 'var(--font-family)',
             fontWeight: 800,
@@ -47,6 +48,7 @@ export default function BrandLogo({ size = 'default', light = false }) {
 
         {!isSmall && (
           <span
+            className="brand-logo-tagline"
             style={{
               fontSize: '0.68rem',
               fontWeight: 600,

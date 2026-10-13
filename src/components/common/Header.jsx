@@ -23,7 +23,7 @@ export default function Header() {
   };
 
   return (
-    <header className="border-bottom sticky-top bg-white" style={{ zIndex: 1030 }}>
+    <header className="site-header border-bottom sticky-top bg-white" style={{ zIndex: 1030 }}>
       {/* Top Utility Bar */}
       <div style={{ backgroundColor: 'var(--secondary-bg)', borderBottom: '1px solid var(--border-color)', fontSize: '0.8rem' }} className="py-1">
         <div className="container d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -48,9 +48,9 @@ export default function Header() {
 
       {/* Main Header */}
       <div className="container py-2 py-md-3">
-        <div className="d-flex align-items-center justify-content-between gap-3">
+        <div className="header-main-row d-flex align-items-center justify-content-between gap-3">
           {/* Brand Logo */}
-          <div className="flex-shrink-0">
+          <div className="header-brand flex-shrink-0">
             <BrandLogo />
           </div>
 
@@ -78,7 +78,7 @@ export default function Header() {
           </form>
 
           {/* Header Actions */}
-          <div className="d-flex align-items-center gap-2 gap-sm-3">
+          <div className="header-actions d-flex align-items-center gap-2 gap-sm-3">
             {/* Wishlist Trigger */}
             <button
               type="button"

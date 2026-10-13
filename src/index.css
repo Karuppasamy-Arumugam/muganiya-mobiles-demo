@@ -24,14 +24,96 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+html {
+  overflow-y: auto;
+}
+
 body {
   margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
   font-family: var(--font-family);
   background-color: var(--main-bg);
   color: var(--main-text);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.app-root {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Keep vertical page scrolling on narrow mobile viewports. */
+@media (max-width: 767.98px) {
+  body {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* A tall sticky header uses too much of the visible mobile screen. */
+  .app-root > header.sticky-top {
+    position: static !important;
+    top: auto !important;
+  }
+
+  /* Leave room for the fixed WhatsApp and chatbot buttons at page end. */
+  .app-root > .flex-grow-1 {
+    padding-bottom: 5.5rem;
+  }
+}
+
+/* Keep the mobile menu button visible on compact 320px-wide screens. */
+@media (max-width: 400px) {
+  .site-header .header-main-row {
+    gap: 0.35rem !important;
+  }
+
+  .site-header .header-brand {
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-shrink: 1 !important;
+  }
+
+  .site-header .brand-logo {
+    min-width: 0;
+    gap: 0.3rem !important;
+  }
+
+  .site-header .brand-logo img {
+    width: 30px !important;
+    height: 30px !important;
+  }
+
+  .site-header .brand-logo-wordmark {
+    font-size: 0.96rem !important;
+    white-space: nowrap;
+  }
+
+  .site-header .brand-logo-tagline {
+    display: none;
+  }
+
+  .site-header .header-actions {
+    flex: 0 0 auto;
+    gap: 0.25rem !important;
+  }
+
+  .site-header .header-actions .btn-brand-soft {
+    padding: 0.35rem 0.45rem;
+  }
+
+  .site-header .header-actions .btn-outline-secondary {
+    padding: 0.35rem !important;
+  }
 }
 
 /* Typography Overrides */
