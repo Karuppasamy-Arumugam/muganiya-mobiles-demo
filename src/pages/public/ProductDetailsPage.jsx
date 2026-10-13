@@ -35,6 +35,7 @@ export default function ProductDetailsPage() {
   const [selectedColor, setSelectedColor] = useState(null);
   const [selectedRam, setSelectedRam] = useState(null);
   const [selectedStorage, setSelectedStorage] = useState(null);
+  const [selectedVariantAttributes, setSelectedVariantAttributes] = useState({});
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [isZoomed, setIsZoomed] = useState(false);
   const [copiedShare, setCopiedShare] = useState(false);
@@ -45,10 +46,23 @@ export default function ProductDetailsPage() {
       setSelectedColor(product.colors && product.colors.length > 0 ? product.colors[0] : null);
       setSelectedRam(product.ramOptions && product.ramOptions.length > 0 ? product.ramOptions[0] : null);
       setSelectedStorage(product.storageOptions && product.storageOptions.length > 0 ? product.storageOptions[0] : null);
+      const firstVariant = product.variants?.[0];
+      setSelectedVariantAttributes(firstVariant?.variantAttributes || {});
       setActiveImageIndex(0);
       setIsZoomed(false);
       window.scrollTo(0, 0);
     }
+  }, [product]);
+
+  const variantAttributeOptions = useMemo(() => {
+    const optionsByName = new Map();
+    for (const variant of product?.variants || []) {
+      for (const [name, value] of Object.entries(variant.variantAttributes || {})) {
+        if (!optionsByName.has(name)) optionsByName.set(name, new Set());
+        if (value) optionsByName.get(name).add(value);
+      }
+    }
+    return [...optionsByName.entries()].map(([name, values]) => [name, [...values]]);
   }, [product]);
 
   // Current active variant match (if product has variants matrix)
@@ -61,10 +75,13 @@ export default function ProductDetailsPage() {
         const colorMatch = !selectedColor || v.color === selectedColor.name;
         const ramMatch = !selectedRam || v.ram === selectedRam;
         const storageMatch = !selectedStorage || v.storage === selectedStorage;
-        return colorMatch && ramMatch && storageMatch;
+        const attributesMatch = Object.entries(selectedVariantAttributes).every(
+          ([name, value]) => !value || v.variantAttributes?.[name] === value
+        );
+        return colorMatch && ramMatch && storageMatch && attributesMatch;
       }) || product.variants[0]
     );
-  }, [product, selectedColor, selectedRam, selectedStorage]);
+  }, [product, selectedColor, selectedRam, selectedStorage, selectedVariantAttributes]);
 
   // Dynamic Prices & Stock
   const currentSellingPrice = currentVariant ? currentVariant.sellingPrice : product?.sellingPrice || 0;
@@ -124,7 +141,7 @@ export default function ProductDetailsPage() {
   // Handle WhatsApp Enquiry
   const handleWhatsAppEnquiry = () => {
     const variantDesc = currentVariant
-      ? `(${currentVariant.color || ''} ${currentVariant.ram || ''} ${currentVariant.storage || ''})`
+      ? `(${[currentVariant.color, currentVariant.ram, currentVariant.storage, ...Object.values(currentVariant.variantAttributes || {})].filter(Boolean).join(' ')})`
       : '';
     const message = encodeURIComponent(
       `Hello Muganiyaa-Mobiles! I am interested in ${product.name} ${variantDesc} priced at ₹${currentSellingPrice.toLocaleString('en-IN')}. Please confirm current in-store stock availability.`
@@ -327,7 +344,7 @@ export default function ProductDetailsPage() {
             )}
 
             {/* RAM Options (if present) */}
-            {product.ramOptions && product.ramOptions.length > 0 && (
+            {['mobiles', 'tablets'].includes(product.categorySlug) && product.ramOptions && product.ramOptions.length > 0 && (
               <div className="mb-4">
                 <label className="fw-bold small text-dark d-block mb-2">
                   RAM Size:{' '}
@@ -351,7 +368,7 @@ export default function ProductDetailsPage() {
             )}
 
             {/* Storage Options (if present) */}
-            {product.storageOptions && product.storageOptions.length > 0 && (
+            {['mobiles', 'tablets'].includes(product.categorySlug) && product.storageOptions && product.storageOptions.length > 0 && (
               <div className="mb-4">
                 <label className="fw-bold small text-dark d-block mb-2">
                   Storage Capacity:{' '}
@@ -373,6 +390,27 @@ export default function ProductDetailsPage() {
                 </div>
               </div>
             )}
+
+            {variantAttributeOptions.map(([name, options]) => (
+              <div className="mb-4" key={name}>
+                <label className="fw-bold small text-dark d-block mb-2">
+                  {name}:{' '}
+                  <span className="text-danger fw-bold">{selectedVariantAttributes[name] || options[0]}</span>
+                </label>
+                <div className="d-flex align-items-center gap-2 flex-wrap">
+                  {options.map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      className={`btn btn-sm px-3 py-2 fw-semibold ${selectedVariantAttributes[name] === option ? 'btn-danger' : 'btn-outline-secondary'}`}
+                      onClick={() => setSelectedVariantAttributes((previous) => ({ ...previous, [name]: option }))}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
 
             {/* Action Buttons: Direct Call, WhatsApp & Wishlist */}
             <div className="d-flex flex-column flex-sm-row align-items-stretch gap-3 my-4">

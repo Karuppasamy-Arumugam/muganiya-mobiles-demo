@@ -14,6 +14,41 @@ import { supabase } from '../services/supabaseClient';
 
 const DataContext = createContext(null);
 
+const mapOfferFromDatabase = (row) => ({
+  id: row.id,
+  title: row.title || '',
+  description: row.description || '',
+  type: row.offer_type || 'Shop Discount',
+  badgeText: row.badge_text || '',
+  provider: row.provider || '',
+  discountAmount: Number(row.discount_value || 0),
+  minPurchase: Number(row.min_purchase || 0),
+  tenureOptions: row.tenure_options || '',
+  downPayment: row.down_payment || '',
+  processingFee: row.processing_fee || '',
+  startDate: row.start_at ? String(row.start_at).slice(0, 10) : '',
+  endDate: row.end_at ? String(row.end_at).slice(0, 10) : '',
+  status: row.is_active ? 'active' : 'expired',
+  terms: row.terms || ''
+});
+
+const mapOfferToDatabase = (offer) => ({
+  title: String(offer.title || '').trim(),
+  description: String(offer.description || '').trim(),
+  offer_type: offer.type || 'Shop Discount',
+  badge_text: offer.badgeText || '',
+  provider: offer.provider || '',
+  discount_value: Number(offer.discountAmount || 0),
+  min_purchase: Number(offer.minPurchase || 0),
+  tenure_options: offer.tenureOptions || '',
+  down_payment: offer.downPayment || '',
+  processing_fee: offer.processingFee || '',
+  start_at: offer.startDate ? new Date(`${offer.startDate}T00:00:00`).toISOString() : null,
+  end_at: offer.endDate ? new Date(`${offer.endDate}T23:59:59`).toISOString() : null,
+  terms: offer.terms || '',
+  is_active: offer.status === 'active'
+});
+
 export function DataProvider({ children }) {
   const [db, setDb] = useState(() => loadDatabase());
 
@@ -35,7 +70,8 @@ export function DataProvider({ children }) {
         { data: specificationRows, error: specificationError },
         { data: imageRows, error: imageError },
         { data: variantRows, error: variantError },
-        { data: productOfferRows, error: productOfferError }
+        { data: productOfferRows, error: productOfferError },
+        { data: offerRows, error: offerError }
       ] = await Promise.all([
         supabase.from('categories').select('id, name, slug'),
         supabase
@@ -55,9 +91,10 @@ export function DataProvider({ children }) {
         supabase
           .from('product_variants')
           .select(
-            'id, product_id, sku, color_name, color_hex, ram, storage, price, original_price, stock_quantity, is_available'
+            'id, product_id, sku, color_name, color_hex, ram, storage, variant_attributes, price, original_price, stock_quantity, is_available'
           ),
-        supabase.from('product_offers').select('product_id, offer_id')
+        supabase.from('product_offers').select('product_id, offer_id'),
+        supabase.from('offers').select('*').order('created_at', { ascending: false })
       ]);
 
       if (categoryError) throw categoryError;
@@ -66,6 +103,7 @@ export function DataProvider({ children }) {
       if (imageError) throw imageError;
       if (variantError) throw variantError;
       if (productOfferError) throw productOfferError;
+      if (offerError) throw offerError;
       if (cancelled) return;
 
       const categoryById = new Map(
@@ -132,6 +170,7 @@ export function DataProvider({ children }) {
               color: variant.color_name || '',
               ram: variant.ram || '',
               storage: variant.storage || '',
+              variantAttributes: variant.variant_attributes || {},
               sellingPrice: Number(variant.price || 0),
               originalPrice: Number(
                 variant.original_price ?? localVariant?.originalPrice ?? variant.price ?? 0
@@ -209,7 +248,8 @@ export function DataProvider({ children }) {
         return {
           ...previousDb,
           categories: categories || previousDb.categories || [],
-          products: loadedProducts
+          products: loadedProducts,
+          offers: (offerRows || []).map(mapOfferFromDatabase)
         };
       });
     }
@@ -234,6 +274,7 @@ export function DataProvider({ children }) {
 
   // Product actions
   const addProduct = async (newProduct) => {
+    if (!supabase) throw new Error('Supabase is not configured.');
     const { data: category, error: categoryError } = await supabase
       .from('categories')
       .select('id')
@@ -292,6 +333,7 @@ export function DataProvider({ children }) {
         color_hex: color?.hex || null,
         ram: variant.ram || null,
         storage: variant.storage || null,
+        variant_attributes: variant.variantAttributes || {},
         price: Number(variant.sellingPrice ?? newProduct.sellingPrice ?? 0),
         original_price: Number(
           variant.originalPrice ?? newProduct.originalPrice ?? variant.sellingPrice ?? 0
@@ -516,6 +558,7 @@ export function DataProvider({ children }) {
           color_hex: color?.hex || null,
           ram: variant.ram || null,
           storage: variant.storage || null,
+          variant_attributes: variant.variantAttributes || {},
           price: Number(variant.sellingPrice ?? product.sellingPrice ?? 0),
           original_price: Number(
             variant.originalPrice ?? product.originalPrice ?? 0
@@ -717,28 +760,36 @@ export function DataProvider({ children }) {
   };
 
   // Offer actions
-  const addOffer = (offer) => {
-    const newOffer = {
-      ...offer,
-      id: offer.id || `off-${Date.now()}`
-    };
-
-    setDb((previousDb) => ({
-      ...previousDb,
-      offers: [newOffer, ...(previousDb.offers || [])]
-    }));
+  const addOffer = async (offer) => {
+    if (!supabase) throw new Error('Supabase is not configured.');
+    const { data, error } = await supabase.from('offers')
+      .insert(mapOfferToDatabase(offer)).select('*').single();
+    if (error) throw error;
+    const savedOffer = mapOfferFromDatabase(data);
+    setDb((previousDb) => ({ ...previousDb, offers: [savedOffer, ...(previousDb.offers || [])] }));
+    return savedOffer;
   };
 
-  const updateOffer = (id, updates) => {
+  const updateOffer = async (id, updates) => {
+    if (!supabase) throw new Error('Supabase is not configured.');
+    const existing = (db.offers || []).find((offer) => offer.id === id);
+    if (!existing) throw new Error('Could not find this offer in Supabase. Reload the page and try again.');
+    const { data, error } = await supabase.from('offers')
+      .update(mapOfferToDatabase({ ...existing, ...updates }))
+      .eq('id', id).select('*').single();
+    if (error) throw error;
+    const savedOffer = mapOfferFromDatabase(data);
     setDb((previousDb) => ({
       ...previousDb,
-      offers: (previousDb.offers || []).map((offer) =>
-        offer.id === id ? { ...offer, ...updates } : offer
-      )
+      offers: (previousDb.offers || []).map((offer) => offer.id === id ? savedOffer : offer)
     }));
+    return savedOffer;
   };
 
-  const deleteOffer = (id) => {
+  const deleteOffer = async (id) => {
+    if (!supabase) throw new Error('Supabase is not configured.');
+    const { error } = await supabase.from('offers').delete().eq('id', id);
+    if (error) throw error;
     setDb((previousDb) => ({
       ...previousDb,
       offers: (previousDb.offers || []).filter((offer) => offer.id !== id)

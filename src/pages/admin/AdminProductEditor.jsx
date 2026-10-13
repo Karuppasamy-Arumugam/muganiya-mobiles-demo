@@ -13,6 +13,26 @@ import { useData } from '../../context/DataContext';
 import { MOBILE_BRANDS } from '../../services/seedData';
 import { supabase } from '../../services/supabaseClient';
 
+const usesRamAndStorage = (slug) => ['mobiles', 'tablets'].includes(slug);
+const variantLabelForCategory = (slug) => ({
+  tvs: 'Screen Size', 'cooling-appliances': 'Capacity', 'kitchen-appliances': 'Capacity',
+  watches: 'Dial / Case Size', audio: 'Model / Fit', 'phone-protection': 'Compatible Model',
+  storage: 'Capacity', accessories: 'Model / Type'
+}[slug] || 'Variant Option');
+const specificationsForCategory = (slug) => {
+  if (slug === 'mobiles' || slug === 'tablets') return {
+    display: '', cpu: '', rearCamera: '', frontCamera: '', batteryCapacity: '',
+    operatingSystem: '', warranty: '1 Year Brand Warranty'
+  };
+  if (slug === 'tvs') return { screenSize: '', resolution: '', displayType: '', smartPlatform: '', audioOutput: '', ports: '', warranty: '' };
+  if (slug === 'cooling-appliances') return { capacity: '', energyRating: '', inverter: '', refrigerant: '', noiseLevel: '', warranty: '' };
+  if (slug === 'kitchen-appliances') return { capacity: '', power: '', functions: '', controls: '', accessories: '', warranty: '' };
+  if (slug === 'watches') return { display: '', connectivity: '', batteryLife: '', waterResistance: '', compatibility: '', warranty: '' };
+  if (slug === 'audio') return { type: '', connectivity: '', batteryLife: '', noiseCancellation: '', microphone: '', warranty: '' };
+  if (slug === 'sim-cards') return { network: '', planValidity: '', dataAllowance: '', activationRequirements: '' };
+  return { compatibility: '', material: '', dimensions: '', includedInBox: '', warranty: '' };
+};
+
 export default function AdminProductEditor() {
   const { id } = useParams();
   const isEditMode = Boolean(id);
@@ -41,6 +61,8 @@ export default function AdminProductEditor() {
     colors: [{ name: 'Black', hex: '#1C1C1E' }],
     ramOptions: ['8GB'],
     storageOptions: ['128GB', '256GB'],
+    variantLabel: 'Variant Option',
+    variantOptions: [],
     variants: [],
     originalPrice: 29999,
     sellingPrice: 24999,
@@ -75,6 +97,8 @@ export default function AdminProductEditor() {
           colors: existing.colors || [],
           ramOptions: existing.ramOptions || [],
           storageOptions: existing.storageOptions || [],
+          variantLabel: existing.variantLabel || variantLabelForCategory(existing.categorySlug),
+          variantOptions: [...new Set((existing.variants || []).flatMap((variant) => Object.values(variant.variantAttributes || {})).filter(Boolean))],
           variants: existing.variants || [],
           images: existing.images || (existing.coverImage ? [existing.coverImage] : []),
           highlights: existing.highlights && existing.highlights.length > 0 ? existing.highlights : [''],
@@ -107,7 +131,13 @@ export default function AdminProductEditor() {
       ...prev,
       category: e.target.value,
       categorySlug: catSlug,
-      specsType
+      specsType,
+      specifications: specificationsForCategory(catSlug),
+      ramOptions: [],
+      storageOptions: [],
+      variantLabel: variantLabelForCategory(catSlug),
+      variantOptions: [],
+      variants: []
     }));
   };
 
@@ -192,21 +222,44 @@ export default function AdminProductEditor() {
   // Generate / Regenerate Variant Combinations
   const handleGenerateVariants = () => {
     const colors = formData.colors.length > 0 ? formData.colors : [{ name: 'Standard', hex: '#000000' }];
-    const rams = formData.ramOptions.length > 0 ? formData.ramOptions : [''];
-    const storages = formData.storageOptions.length > 0 ? formData.storageOptions : [''];
+    const mobileDimensions = usesRamAndStorage(formData.categorySlug);
+    const rams = (formData.ramOptions || [])
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const storages = (formData.storageOptions || [])
+      .map((value) => value.trim())
+      .filter(Boolean);
 
+    const customOptions = (formData.variantOptions || []).map((value) => value.trim()).filter(Boolean);
+    if (mobileDimensions && rams.length === 0) rams.push('');
+    if (mobileDimensions && storages.length === 0) storages.push('');
+    if (!mobileDimensions && customOptions.length === 0) customOptions.push('');
     const combinations = [];
+    const skuTokens = new Set();
+    const makeSku = (color, ram, storage, attrs) => {
+      const text = [formData.slug || formData.name || 'PRODUCT', color, ram, storage, ...Object.values(attrs)]
+        .filter(Boolean).join('-').toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48);
+      let sku = `${text || 'PRODUCT'}-${crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36)}`;
+      while (skuTokens.has(sku)) sku += 'X';
+      skuTokens.add(sku);
+      return sku;
+    };
     colors.forEach((c) => {
-      rams.forEach((r) => {
-        storages.forEach((s) => {
+      (mobileDimensions ? rams : ['']).forEach((r) => {
+        (mobileDimensions ? storages : customOptions).forEach((option) => {
+          const s = mobileDimensions ? option : '';
+          const variantAttributes = !mobileDimensions && option
+            ? { [formData.variantLabel || variantLabelForCategory(formData.categorySlug)]: option }
+            : {};
           combinations.push({
             color: c.name,
             ram: r,
             storage: s,
+            variantAttributes,
             sellingPrice: formData.sellingPrice,
             originalPrice: formData.originalPrice,
             stockStatus: 'In Stock',
-            sku: `${formData.model || 'MOD'}-${c.name.substring(0, 3).toUpperCase()}-${s || 'STD'}`
+            sku: makeSku(c.name, r, s, variantAttributes)
           });
         });
       });
@@ -558,40 +611,48 @@ export default function AdminProductEditor() {
                 </div>
               </div>
 
-              {/* RAM and Storage Arrays */}
-              <div className="row g-3 mb-4">
+              {/* Category-specific variant dimensions */}
+              {usesRamAndStorage(formData.categorySlug) ? <div className="row g-3 mb-4">
                 <div className="col-12 col-md-6">
-                  <label className="form-label small fw-bold text-dark">RAM Sizes (Comma-separated)</label>
+                  <label className="form-label small fw-bold text-dark">
+                    RAM Sizes (Comma-separated)
+                  </label>
                   <input
                     type="text"
                     className="form-control form-control-sm"
                     placeholder="e.g. 6GB, 8GB, 12GB"
-                    value={formData.ramOptions?.join(', ')}
+                    value={(formData.ramOptions || []).join(', ')}
                     onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        ramOptions: e.target.value.split(',').map((s) => s.trim()).filter(Boolean)
-                      })
+                      setFormData((prev) => ({
+                        ...prev,
+                        ramOptions: e.target.value.split(',')
+                      }))
                     }
                   />
                 </div>
 
                 <div className="col-12 col-md-6">
-                  <label className="form-label small fw-bold text-dark">Storage Sizes (Comma-separated)</label>
+                  <label className="form-label small fw-bold text-dark">
+                    Storage Sizes (Comma-separated)
+                  </label>
                   <input
                     type="text"
                     className="form-control form-control-sm"
                     placeholder="e.g. 128GB, 256GB, 512GB"
-                    value={formData.storageOptions?.join(', ')}
+                    value={(formData.storageOptions || []).join(', ')}
                     onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        storageOptions: e.target.value.split(',').map((s) => s.trim()).filter(Boolean)
-                      })
+                      setFormData((prev) => ({
+                        ...prev,
+                        storageOptions: e.target.value.split(',')
+                      }))
                     }
                   />
                 </div>
-              </div>
+              </div> : <div className="mb-4">
+                <label className="form-label small fw-bold text-dark">{formData.variantLabel || 'Variant Options'} (comma-separated)</label>
+                <input type="text" className="form-control form-control-sm" placeholder="e.g. 43 inch, 55 inch, 65 inch" value={(formData.variantOptions || []).join(', ')} onChange={(e) => setFormData((prev) => ({ ...prev, variantOptions: e.target.value.split(',') }))} />
+                <small className="text-muted">Enter the options customers can choose for this category.</small>
+              </div>}
 
               {/* Generate Combinations Action */}
               <div className="d-flex align-items-center justify-content-between mb-3">
@@ -613,7 +674,7 @@ export default function AdminProductEditor() {
                     <thead className="table-light">
                       <tr>
                         <th>Colour</th>
-                        <th>RAM / Storage</th>
+                        <th>{usesRamAndStorage(formData.categorySlug) ? 'RAM / Storage' : 'Variant'}</th>
                         <th>Selling Price (₹)</th>
                         <th>Original Price (₹)</th>
                         <th>Stock Status</th>
@@ -624,7 +685,7 @@ export default function AdminProductEditor() {
                       {formData.variants.map((v, idx) => (
                         <tr key={idx}>
                           <td className="fw-bold">{v.color}</td>
-                          <td>{v.ram ? `${v.ram} + ` : ''}{v.storage || 'Standard'}</td>
+                          <td>{usesRamAndStorage(formData.categorySlug) ? `${v.ram ? `${v.ram} + ` : ''}${v.storage || 'Standard'}` : Object.values(v.variantAttributes || {}).join(' / ') || 'Standard'}</td>
                           <td>
                             <input
                               type="number"
@@ -671,7 +732,7 @@ export default function AdminProductEditor() {
                 </div>
               ) : (
                 <div className="alert alert-light border small text-muted">
-                  No variant matrix generated yet. Click "Generate Matrix" above to automatically create pricing per colour and storage combination.
+                  No variant matrix generated yet. Enter this category's options and click "Generate Matrix" to create the variant combinations.
                 </div>
               )}
             </div>
@@ -818,7 +879,7 @@ export default function AdminProductEditor() {
                 </div>
               ) : (
                 <div className="row g-3">
-                  {Object.entries(formData.specifications || {}).map(([k, val], i) => (
+                  {Object.keys(specificationsForCategory(formData.categorySlug)).map((k, i) => (
                     <div key={i} className="col-12 col-md-6">
                       <label className="form-label small fw-bold text-dark text-capitalize">
                         {k.replace(/([A-Z])/g, ' $1')}
@@ -826,7 +887,7 @@ export default function AdminProductEditor() {
                       <input
                         type="text"
                         className="form-control form-control-sm"
-                        value={val}
+                        value={formData.specifications?.[k] || ''}
                         onChange={(e) =>
                           setFormData({
                             ...formData,

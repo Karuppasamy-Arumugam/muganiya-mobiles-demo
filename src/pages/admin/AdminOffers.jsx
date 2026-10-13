@@ -8,6 +8,8 @@ export default function AdminOffers() {
   const offers = db.offers || [];
   const [editingOffer, setEditingOffer] = useState(null);
   const [showModal, setShowModal] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
   const [formData, setFormData] = useState({
     title: '',
@@ -51,29 +53,51 @@ export default function AdminOffers() {
     setShowModal(true);
   };
 
-  const handleFormSubmit = (e) => {
+  const handleFormSubmit = async (e) => {
     e.preventDefault();
-    if (editingOffer) {
-      updateOffer(editingOffer.id, formData);
-    } else {
-      addOffer(formData);
+    setSaving(true);
+    setErrorMessage('');
+    try {
+      if (editingOffer) {
+        await updateOffer(editingOffer.id, formData);
+      } else {
+        await addOffer(formData);
+      }
+      setShowModal(false);
+    } catch (error) {
+      console.error('Could not save offer to Supabase:', error);
+      setErrorMessage(error.message || 'Could not save the offer.');
+    } finally {
+      setSaving(false);
     }
-    setShowModal(false);
   };
 
-  const handleDelete = (id) => {
+  const handleDelete = async (id) => {
     if (window.confirm('Delete this promotion from active store offers?')) {
-      deleteOffer(id);
+      setErrorMessage('');
+      try {
+        await deleteOffer(id);
+      } catch (error) {
+        console.error('Could not delete offer from Supabase:', error);
+        setErrorMessage(error.message || 'Could not delete the offer.');
+      }
     }
   };
 
-  const toggleOfferStatus = (offer) => {
+  const toggleOfferStatus = async (offer) => {
     const nextStatus = offer.status === 'active' ? 'expired' : 'active';
-    updateOffer(offer.id, { status: nextStatus });
+    setErrorMessage('');
+    try {
+      await updateOffer(offer.id, { status: nextStatus });
+    } catch (error) {
+      console.error('Could not update offer status in Supabase:', error);
+      setErrorMessage(error.message || 'Could not update the offer status.');
+    }
   };
 
   return (
     <div className="admin-offers pb-5">
+      {errorMessage && <div className="alert alert-danger" role="alert">{errorMessage}</div>}
       <div className="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3 mb-4">
         <div>
           <h2 className="fw-bold text-dark mb-1 fs-3">Offers, Cashback & EMI</h2>
@@ -164,6 +188,7 @@ export default function AdminOffers() {
 
               <form onSubmit={handleFormSubmit}>
                 <div className="modal-body">
+                  {errorMessage && <div className="alert alert-danger" role="alert">{errorMessage}</div>}
                   <div className="row g-3">
                     <div className="col-12">
                       <label className="form-label small fw-bold text-dark">Offer Title *</label>
@@ -282,8 +307,8 @@ export default function AdminOffers() {
                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowModal(false)}>
                     Cancel
                   </button>
-                  <button type="submit" className="btn btn-brand-primary btn-sm px-4">
-                    {editingOffer ? 'Save Offer' : 'Create Offer'}
+                  <button type="submit" className="btn btn-brand-primary btn-sm px-4" disabled={saving}>
+                    {saving ? 'Saving…' : editingOffer ? 'Save Offer' : 'Create Offer'}
                   </button>
                 </div>
               </form>
