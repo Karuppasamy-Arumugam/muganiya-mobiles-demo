@@ -203,17 +203,28 @@ export default function AdminOffers() {
                     </div>
 
                     <div className="col-12 col-md-6">
-                      <label className="form-label small fw-bold text-dark">Offer Type</label>
-                      <select
-                        className="form-select"
+                      <label className="form-label small fw-bold text-dark" htmlFor="offer-type">
+                        Offer Type
+                      </label>
+
+                      <input
+                        id="offer-type"
+                        type="text"
+                        className="form-control"
+                        list="offer-type-options"
+                        placeholder="Select or type an offer type"
                         value={formData.type}
-                        onChange={(e) => setFormData({ ...formData, type: e.target.value })}
-                      >
-                        <option value="Card Offer">Card Offer / Bank Discount</option>
-                        <option value="EMI Option">No-Cost EMI Option</option>
-                        <option value="Cashback & Exchange">Cashback & Exchange Bonus</option>
-                        <option value="Shop Discount">Shop Festival Discount</option>
-                      </select>
+                        onChange={(e) =>
+                          setFormData({ ...formData, type: e.target.value })
+                        }
+                      />
+
+                      <datalist id="offer-type-options">
+                        <option value="Card Offer">Bank discount</option>
+                        <option value="EMI Option">No-Cost EMI</option>
+                        <option value="Cashback & Exchange">Cashback and exchange</option>
+                        <option value="Shop Discount">Shop festival discount</option>
+                      </datalist>
                     </div>
 
                     <div className="col-12 col-md-6">

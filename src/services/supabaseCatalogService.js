@@ -1,11 +1,11 @@
 import { supabase } from './supabaseClient';
 
-function getImageUrl(storagePath) {
+function getImageUrl(storagePath, bucketName) {
   if (!storagePath) return '';
   if (/^https?:\/\//i.test(storagePath)) return storagePath;
 
   return supabase.storage
-    .from('product-images')
+    .from(bucketName)
     .getPublicUrl(storagePath).data.publicUrl;
 }
 
@@ -32,7 +32,10 @@ function toCatalogProduct(row, related) {
   const colors = [
     ...new Map(
       related.variants
-        .filter((variant) => variant.product_id === row.id && variant.color_name)
+        .filter(
+          (variant) =>
+            variant.product_id === row.id && variant.color_name
+        )
         .map((variant) => [
           variant.color_name,
           {
@@ -54,12 +57,13 @@ function toCatalogProduct(row, related) {
   const images = related.images
     .filter((image) => image.product_id === row.id)
     .sort((a, b) => a.sort_order - b.sort_order)
-    .map((image) => getImageUrl(image.storage_path))
+    .map((image) => getImageUrl(image.storage_path, 'product-images'))
     .filter(Boolean);
 
   const category = related.categories.find(
     (item) => item.id === row.category_id
   );
+
   const basePrice = Number(row.base_price || 0);
 
   return {
@@ -74,7 +78,10 @@ function toCatalogProduct(row, related) {
     description: row.description || '',
     sellingPrice: productVariants[0]?.sellingPrice ?? basePrice,
     originalPrice: Number(row.original_price ?? basePrice),
-    status: row.status === 'active' && row.is_active ? 'published' : 'draft',
+    status:
+      row.status === 'active' && row.is_active
+        ? 'published'
+        : 'draft',
     isFeatured: Boolean(row.is_featured),
     isLatestLaunch: Boolean(row.is_latest_launch),
     isBestSeller: Boolean(row.is_best_seller),
@@ -82,17 +89,38 @@ function toCatalogProduct(row, related) {
     highlights: row.highlights || [],
     variants: productVariants,
     colors,
-    ramOptions: [...new Set(productVariants.map((v) => v.ram).filter(Boolean))],
-    storageOptions: [
-      ...new Set(productVariants.map((v) => v.storage).filter(Boolean))
+    ramOptions: [
+      ...new Set(productVariants.map((variant) => variant.ram).filter(Boolean))
     ],
-    stockStatus: productVariants.some((v) => v.stockStatus === 'In Stock')
+    storageOptions: [
+      ...new Set(
+        productVariants.map((variant) => variant.storage).filter(Boolean)
+      )
+    ],
+    stockStatus: productVariants.some(
+      (variant) => variant.stockStatus === 'In Stock'
+    )
       ? 'In Stock'
       : 'Out of Stock',
     specifications,
     specsType: productSpecs[0]?.group_name || '',
     images,
     coverImage: images[0] || ''
+  };
+}
+
+function mapBanner(row) {
+  return {
+    id: row.id,
+    title: row.title || '',
+    subtitle: row.subtitle || '',
+    badge: row.badge_text || '',
+    ctaText: row.button_label || 'Explore Now',
+    link: row.target_url || '/mobiles',
+    imagePath: row.image_path || '',
+    imageUrl: getImageUrl(row.image_path, 'banner-images'),
+    active: Boolean(row.is_active),
+    order: row.sort_order ?? 0
   };
 }
 
@@ -104,7 +132,8 @@ export async function fetchSupabaseCatalog(existingDatabase = {}) {
     categoriesResult,
     variantsResult,
     imagesResult,
-    specsResult
+    specsResult,
+    bannersResult
   ] = await Promise.all([
     supabase.from('products').select('*').order('name'),
     supabase.from('categories').select('*').order('sort_order'),
@@ -113,7 +142,8 @@ export async function fetchSupabaseCatalog(existingDatabase = {}) {
     supabase
       .from('product_specifications')
       .select('*')
-      .order('sort_order')
+      .order('sort_order'),
+    supabase.from('banners').select('*').order('sort_order')
   ]);
 
   const failedResult = [
@@ -121,7 +151,8 @@ export async function fetchSupabaseCatalog(existingDatabase = {}) {
     categoriesResult,
     variantsResult,
     imagesResult,
-    specsResult
+    specsResult,
+    bannersResult
   ].find((result) => result.error);
 
   if (failedResult) throw failedResult.error;
@@ -142,6 +173,7 @@ export async function fetchSupabaseCatalog(existingDatabase = {}) {
     })),
     products: (productsResult.data || []).map((row) =>
       toCatalogProduct(row, related)
-    )
+    ),
+    banners: (bannersResult.data || []).map(mapBanner)
   };
 }

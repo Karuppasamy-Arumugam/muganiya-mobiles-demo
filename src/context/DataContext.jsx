@@ -46,6 +46,29 @@ function toSupabaseEnquiryStatus(status) {
   return ({ New: 'new', 'In Progress': 'contacted', Handled: 'resolved' })[status] || 'new';
 }
 
+function mapSupabaseBanner(row) {
+  const imagePath = row.image_path || '';
+  const imageUrl = !imagePath
+    ? ''
+    : /^https?:\/\//i.test(imagePath)
+      ? imagePath
+      : supabase.storage
+        .from('banner-images')
+        .getPublicUrl(imagePath).data.publicUrl;
+
+  return {
+    id: row.id,
+    title: row.title || '',
+    subtitle: row.subtitle || '',
+    badge: row.badge_text || '',
+    ctaText: row.button_label || 'Explore Now',
+    link: row.target_url || '/mobiles',
+    imagePath,
+    imageUrl,
+    active: Boolean(row.is_active),
+    order: row.sort_order ?? 0
+  };
+}
 export function DataProvider({ children }) {
   const [db, setDb] = useState(() => {
     const saved = loadDatabase();
@@ -208,61 +231,263 @@ export function DataProvider({ children }) {
   };
 
   // Category Actions
-  const addCategory = (category) => {
-    const newCat = {
-      ...category,
-      id: category.id || `cat-${Date.now()}`,
-      slug: category.slug || category.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
-    };
+  const makeCategorySlug = (name) =>
+    name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+  const addCategory = async (category) => {
+    if (!supabase) throw new Error('Supabase is not configured.');
+
+    const name = category.name.trim();
+    const slug = category.slug || makeCategorySlug(name);
+
+    const { data, error } = await supabase
+      .from('categories')
+      .insert({ name, slug })
+      .select('id, name, slug')
+      .single();
+
+    if (error) throw error;
+
     setDb((prev) => ({
       ...prev,
-      categories: [...prev.categories, newCat]
+      categories: [...prev.categories, data]
     }));
+
+    return data;
   };
 
-  const updateCategory = (id, updates) => {
+  const updateCategory = async (id, updates) => {
+    if (!supabase) throw new Error('Supabase is not configured.');
+
+    const previousCategory = db.categories.find((category) => category.id === id);
+    const name = updates.name?.trim() || previousCategory?.name;
+    const slug = updates.slug || makeCategorySlug(name);
+
+    const { data, error } = await supabase
+      .from('categories')
+      .update({ name, slug })
+      .eq('id', id)
+      .select('id, name, slug')
+      .single();
+
+    if (error) throw error;
+
     setDb((prev) => ({
       ...prev,
-      categories: prev.categories.map((c) => (c.id === id ? { ...c, ...updates } : c))
+      categories: prev.categories.map((category) =>
+        category.id === id ? data : category
+      ),
+      products: prev.products.map((product) =>
+        product.categorySlug === previousCategory?.slug
+          ? { ...product, category: data.name, categorySlug: data.slug }
+          : product
+      )
     }));
+
+    return data;
   };
 
-  const deleteCategory = (id) => {
+  const deleteCategory = async (id) => {
+    if (!supabase) throw new Error('Supabase is not configured.');
+
+    const category = db.categories.find((item) => item.id === id);
+    const linkedProducts = db.products.filter(
+      (product) => product.categorySlug === category?.slug
+    );
+
+    if (linkedProducts.length > 0) {
+      throw new Error(
+        'This category has products assigned to it. Reassign those products before deleting the category.'
+      );
+    }
+
+    const { error } = await supabase
+      .from('categories')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+
     setDb((prev) => ({
       ...prev,
-      categories: prev.categories.filter((c) => c.id !== id)
+      categories: prev.categories.filter((category) => category.id !== id)
     }));
   };
 
   // Offer Actions
-  const addOffer = (offer) => {
-    const newOffer = {
-      ...offer,
-      id: offer.id || `off-${Date.now()}`
-    };
-    setDb((prev) => ({
-      ...prev,
-      offers: [newOffer, ...prev.offers]
-    }));
+
+  const offerToRow = (offer) => ({
+    title: offer.title?.trim(),
+    offer_type: offer.type,
+    discount_value: Number(offer.discountAmount) || 0,
+    start_at: offer.startDate ? `${offer.startDate}T00:00:00.000Z` : null,
+    end_at: offer.endDate ? `${offer.endDate}T23:59:59.999Z` : null,
+    terms: offer.terms || null,
+    is_active: offer.status === 'active',
+    badge_text: offer.badgeText || null,
+    provider: offer.provider || null,
+    min_purchase: Number(offer.minPurchase) || 0,
+    tenure_options: offer.tenureOptions || null,
+    down_payment: offer.downPayment || null,
+    processing_fee: offer.processingFee || null,
+  });
+
+  const offerFromRow = (row) => ({
+    id: row.id, // Supabase UUID; use this for product_offers.offer_id
+    title: row.title || '',
+    type: row.offer_type || 'Card Offer',
+    discountAmount: Number(row.discount_value) || 0,
+    startDate: row.start_at?.slice(0, 10) || '',
+    endDate: row.end_at?.slice(0, 10) || '',
+    terms: row.terms || '',
+    status: row.is_active ? 'active' : 'expired',
+    badgeText: row.badge_text || '',
+    provider: row.provider || '',
+    minPurchase: Number(row.min_purchase) || 0,
+    tenureOptions: row.tenure_options || '',
+    downPayment: row.down_payment || '',
+    processingFee: row.processing_fee || '',
+  });
+
+  const addOffer = async (offer) => {
+    const { data, error } = await supabase
+      .from('offers')
+      .insert(offerToRow(offer))
+      .select('*')
+      .single();
+
+    if (error) throw error;
+
+    const savedOffer = offerFromRow(data);
+    setDb((prev) => ({ ...prev, offers: [savedOffer, ...(prev.offers || [])] }));
+    return savedOffer;
   };
 
-  const updateOffer = (id, updates) => {
+  const updateOffer = async (id, updates) => {
+    const existingOffer = (db.offers || []).find((offer) => offer.id === id);
+    if (!existingOffer) throw new Error('Offer was not found.');
+
+    const { data, error } = await supabase
+      .from('offers')
+      .update(offerToRow({ ...existingOffer, ...updates }))
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) throw error;
+
+    const savedOffer = offerFromRow(data);
     setDb((prev) => ({
       ...prev,
-      offers: prev.offers.map((o) => (o.id === id ? { ...o, ...updates } : o))
+      offers: (prev.offers || []).map((offer) =>
+        offer.id === id ? savedOffer : offer
+      ),
     }));
+    return savedOffer;
   };
 
-  const deleteOffer = (id) => {
+  const deleteOffer = async (id) => {
+    const { error } = await supabase.from('offers').delete().eq('id', id);
+    if (error) throw error;
+
     setDb((prev) => ({
       ...prev,
-      offers: prev.offers.filter((o) => o.id !== id)
+      offers: (prev.offers || []).filter((offer) => offer.id !== id),
     }));
   };
 
   // Banner Actions
-  const updateBanners = (banners) => {
-    setDb((prev) => ({ ...prev, banners }));
+  const updateBanners = async (banners) => {
+    if (!supabase) {
+      throw new Error('Supabase is not configured. Banners were not saved.');
+    }
+
+    const currentBanners = db.banners || [];
+    const nextBanners = banners || [];
+
+    const isUuid = (value) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        value || ''
+      );
+
+    const toBannerRow = (banner, index) => {
+      const imagePath = banner.imagePath || banner.imageUrl;
+
+      if (!imagePath) {
+        throw new Error('Select or upload a banner image before saving.');
+      }
+
+      return {
+        title: banner.title?.trim(),
+        subtitle: banner.subtitle || null,
+        badge_text: banner.badge || null,
+        button_label: banner.ctaText || null,
+        target_url: banner.link || '/mobiles',
+        image_path: imagePath,
+        sort_order: index,
+        is_active: Boolean(banner.active),
+        updated_at: new Date().toISOString()
+      };
+    };
+
+    const existingBanners = nextBanners.filter((banner) => isUuid(banner.id));
+    const newBanners = nextBanners.filter((banner) => !isUuid(banner.id));
+
+    const existingRows = existingBanners.map((banner) => ({
+      ...toBannerRow(banner, nextBanners.indexOf(banner)),
+      id: banner.id
+    }));
+
+    const newRows = newBanners.map((banner) =>
+      toBannerRow(banner, nextBanners.indexOf(banner))
+    );
+
+    let savedRows = [];
+
+    if (existingRows.length > 0) {
+      const { data, error } = await supabase
+        .from('banners')
+        .upsert(existingRows, { onConflict: 'id' })
+        .select('*');
+
+      if (error) throw error;
+      savedRows.push(...(data || []));
+    }
+
+    if (newRows.length > 0) {
+      // No id is sent here; Supabase generates the UUID.
+      const { data, error } = await supabase
+        .from('banners')
+        .insert(newRows)
+        .select('*');
+
+      if (error) throw error;
+      savedRows.push(...(data || []));
+    }
+
+    const nextIds = new Set(
+      existingBanners.map((banner) => banner.id)
+    );
+
+    const removedIds = currentBanners
+      .filter((banner) => isUuid(banner.id) && !nextIds.has(banner.id))
+      .map((banner) => banner.id);
+
+    if (removedIds.length > 0) {
+      const { error } = await supabase
+        .from('banners')
+        .delete()
+        .in('id', removedIds);
+
+      if (error) throw error;
+    }
+
+    const savedBanners = savedRows
+      .map(mapSupabaseBanner)
+      .sort((a, b) => a.order - b.order);
+
+    setDb((prev) => ({ ...prev, banners: savedBanners }));
+    return savedBanners;
   };
 
   // Service Actions
