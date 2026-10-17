@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { MessageCircle, X, Send, Bot, ChevronRight } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { generateChatbotReply } from '../../services/chatbotService';
+import { supabase } from '../../services/supabaseClient';
 
 export default function FloatingActions({ currentProduct = null, currentVariant = null }) {
   const { db } = useData();
@@ -60,38 +60,79 @@ export default function FloatingActions({ currentProduct = null, currentVariant 
 
   const messageIdCounter = useRef(1);
 
-  const handleSendMessage = (textToSend) => {
-    const text = (textToSend || inputVal).trim();
-    if (!text) return;
+  const handleSendMessage = async (textToSend) => {
+  const text = (textToSend || inputVal).trim();
+  if (!text || isThinking) return;
 
-    // Add user message
-    const userMsg = { id: `msg-${messageIdCounter.current++}`, sender: 'user', text };
-    setMessages((prev) => [...prev, userMsg]);
-    setInputVal('');
-    setIsThinking(true);
+  const userMsg = {
+    id: `msg-${messageIdCounter.current++}`,
+    sender: 'user',
+    text
+  };
 
-    // Simulated response delay (realistic typing feel)
-    setTimeout(() => {
-      const reply = generateChatbotReply(text, {
-        products: db.products || [],
-        offers: db.offers || [],
-        contactSettings: db.contactSettings || {},
-        services: db.services || []
-      });
+  const history = messages
+    .filter((item) => item.sender === 'user' || item.sender === 'bot')
+    .slice(-8)
+    .map((item) => ({
+      role: item.sender === 'user' ? 'user' : 'assistant',
+      content: item.text
+    }));
 
-      const botMsg = {
+  // Include the product currently being viewed, when applicable.
+  const messageForAssistant = currentProduct
+    ? `${text}\n\nCurrent product page: ${currentProduct.name}${
+        currentVariant
+          ? `, colour ${currentVariant.color || ''}, RAM ${currentVariant.ram || ''}, storage ${currentVariant.storage || ''}, price ₹${currentVariant.sellingPrice || currentProduct.sellingPrice || ''}`
+          : ''
+      }`
+    : text;
+
+  setMessages((previous) => [...previous, userMsg]);
+  setInputVal('');
+  setIsThinking(true);
+
+  try {
+    if (!supabase) {
+      throw new Error('Supabase is not configured.');
+    }
+
+    const { data, error } = await supabase.functions.invoke(
+      'muganiyaa-assistant',
+      {
+        body: {
+          message: messageForAssistant,
+          history
+        }
+      }
+    );
+
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+
+    const botMsg = {
+      id: `msg-bot-${messageIdCounter.current++}`,
+      sender: 'bot',
+      text: data?.text || 'Sorry, I could not prepare a reply. Please try again.',
+      products: Array.isArray(data?.products) ? data.products : [],
+      cta: data?.cta || null
+    };
+
+    setMessages((previous) => [...previous, botMsg]);
+  } catch (error) {
+    console.error('Assistant request failed:', error);
+
+    setMessages((previous) => [
+      ...previous,
+      {
         id: `msg-bot-${messageIdCounter.current++}`,
         sender: 'bot',
-        text: reply.text,
-        products: reply.products || [],
-        cta: reply.cta || null,
-        actionType: reply.actionType
-      };
-
-      setMessages((prev) => [...prev, botMsg]);
-      setIsThinking(false);
-    }, 450);
-  };
+        text: 'I couldn’t connect to the assistant just now. Please try again in a moment or contact the store.'
+      }
+    ]);
+  } finally {
+    setIsThinking(false);
+  }
+};
 
   const starterQuestions = db.chatbotSettings?.starterQuestions || [
     'Show phones under ₹20,000',
@@ -126,7 +167,7 @@ export default function FloatingActions({ currentProduct = null, currentVariant 
             onClick={() => setIsChatOpen(!isChatOpen)}
             aria-expanded={isChatOpen}
             aria-label="Open Muganiyaa Assistant"
-            title="Muganiyaa Assistant Demo"
+            title="Muganiyaa Assistant"
           >
             {isChatOpen ? <X size={26} /> : <Bot size={26} />}
             <span className="position-absolute top-0 start-100 translate-middle p-1 bg-success border border-light rounded-circle">
@@ -193,7 +234,7 @@ export default function FloatingActions({ currentProduct = null, currentVariant 
                 </h6>
                 <small className="text-success d-flex align-items-center gap-1" style={{ fontSize: '0.72rem' }}>
                   <span className="d-inline-block rounded-circle bg-success" style={{ width: '6px', height: '6px' }} />
-                  Local Catalogue Intelligent Simulation
+                  Gemini AI · Store Catalogue
                 </small>
               </div>
             </div>
@@ -289,7 +330,7 @@ export default function FloatingActions({ currentProduct = null, currentVariant 
             {isThinking && (
               <div className="d-flex align-items-center gap-2 text-muted small">
                 <span className="spinner-grow spinner-grow-sm text-danger" role="status" />
-                <span>Muganiyaa Assistant is checking catalogue...</span>
+                <span>Muganiyaa Assistant is checking the catalogue...</span>
               </div>
             )}
             <div ref={chatMessagesEndRef} />

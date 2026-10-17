@@ -187,6 +187,57 @@ export function DataProvider({ children }) {
     };
   }, []);
 
+  // Load website content from Supabase and keep it in sync.
+  useEffect(() => {
+    if (!supabase) return undefined;
+
+    let cancelled = false;
+
+    const applyWebsiteContent = (row) => {
+      if (!row?.content) return;
+
+      setDb((current) => ({
+        ...current,
+        websiteContent: row.content
+      }));
+    };
+
+    supabase
+      .from('website_content')
+      .select('id, content, updated_at')
+      .eq('id', true)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (error) throw error;
+        if (!cancelled) applyWebsiteContent(data);
+      })
+      .catch((error) => {
+        console.error('Could not load website content from Supabase:', error.message);
+      });
+
+    const channel = supabase
+      .channel('website-content-live')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'website_content'
+        },
+        (payload) => {
+          if (!cancelled && payload.new?.id === true) {
+            applyWebsiteContent(payload.new);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
   // Save changes to localStorage whenever db changes
   useEffect(() => {
     saveDatabase(db);
@@ -201,35 +252,213 @@ export function DataProvider({ children }) {
     return (db.offers || []).filter((o) => o.status === 'active');
   }, [db.offers]);
 
-  // Product Actions
-  const addProduct = (newProduct) => {
-    const productWithId = {
+  // Product Actions — persist products and their related records in Supabase.
+  const productCategoryFor = (product) =>
+    (db.categories || []).find(
+      (category) =>
+        category.slug === product.categorySlug ||
+        category.name === product.category
+    );
+
+  const productRowFor = (product, category) => {
+    if (!category?.id) {
+      throw new Error('Select a valid product category before saving.');
+    }
+
+    const slug =
+      product.slug ||
+      String(product.name || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '');
+    const isPublished = product.status === 'published' || product.status === 'active';
+
+    return {
+      category_id: category.id,
+      name: String(product.name || '').trim(),
+      slug,
+      brand: product.brand || '',
+      model: product.model || '',
+      tagline: product.tagline || '',
+      description: product.description || '',
+      base_price: Number(product.sellingPrice) || 0,
+      original_price: Number(product.originalPrice) || 0,
+      status: isPublished ? 'active' : 'draft',
+      is_active: isPublished,
+      is_featured: Boolean(product.isFeatured),
+      is_latest_launch: Boolean(product.isLatestLaunch),
+      is_best_seller: Boolean(product.isBestSeller),
+      badges: Array.isArray(product.badges) ? product.badges : [],
+      highlights: Array.isArray(product.highlights) ? product.highlights : [],
+      updated_at: new Date().toISOString()
+    };
+  };
+
+  const productRelatedRowsFor = (productId, product) => {
+    const colors = product.colors || [];
+    const variants = product.variants?.length
+      ? product.variants
+      : [{
+          sku: '',
+          color: colors[0]?.name || '',
+          ram: '',
+          storage: '',
+          variantAttributes: {},
+          sellingPrice: product.sellingPrice,
+          originalPrice: product.originalPrice,
+          stockStatus: product.stockStatus
+        }];
+
+    const variantRows = variants.map((variant) => {
+      const color = colors.find((item) => item.name === variant.color);
+      return {
+        product_id: productId,
+        // A fresh SKU prevents collisions when an existing variant is edited.
+        sku: `${product.slug || 'product'}-${crypto.randomUUID()}`,
+        color_name: variant.color || '',
+        color_hex: color?.hex || '',
+        ram: variant.ram || '',
+        storage: variant.storage || '',
+        variant_attributes: variant.variantAttributes || {},
+        price: Number(variant.sellingPrice || product.sellingPrice) || 0,
+        original_price: Number(variant.originalPrice || product.originalPrice) || 0,
+        stock_quantity: variant.stockStatus === 'In Stock' ? 1 : 0,
+        is_available: variant.stockStatus === 'In Stock'
+      };
+    });
+
+    const imageUrls = [...new Set([
+      ...(product.images || []),
+      ...(product.coverImage ? [product.coverImage] : [])
+    ].filter(Boolean))];
+    const imageRows = imageUrls.map((storagePath, index) => ({
+      product_id: productId,
+      storage_path: storagePath,
+      alt_text: product.name || '',
+      sort_order: index,
+      is_primary: index === 0
+    }));
+    const specificationRows = Object.entries(product.specifications || {})
+      .filter(([, value]) => value !== '' && value != null)
+      .map(([name, value], index) => ({
+        product_id: productId,
+        group_name: product.specsType || 'general',
+        name,
+        value: String(value),
+        sort_order: index
+      }));
+
+    const offerIds = Array.isArray(product.offers) ? product.offers : [];
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (offerIds.some((offerId) => !uuidPattern.test(offerId))) {
+      throw new Error('A selected offer has an invalid ID. Refresh offers and select them again.');
+    }
+
+    return [
+      ['product_variants', variantRows],
+      ['product_images', imageRows],
+      ['product_specifications', specificationRows],
+      ['product_offers', offerIds.map((offerId) => ({ product_id: productId, offer_id: offerId }))]
+    ];
+  };
+
+  const saveProductRelatedRows = async (productId, product, replace = false) => {
+    const relatedRows = productRelatedRowsFor(productId, product);
+    if (replace) {
+      for (const [table] of relatedRows) {
+        const { error } = await supabase.from(table).delete().eq('product_id', productId);
+        if (error) throw error;
+      }
+    }
+    for (const [table, rows] of relatedRows) {
+      if (!rows.length) continue;
+      const { error } = await supabase.from(table).insert(rows);
+      if (error) throw error;
+    }
+  };
+
+  const addProduct = async (newProduct) => {
+    if (!supabase) throw new Error('Supabase is not configured. Product was not saved.');
+    const category = productCategoryFor(newProduct);
+    const productRow = productRowFor(newProduct, category);
+    if (!productRow.name) throw new Error('Enter a product name before saving.');
+
+    const { data: savedRow, error } = await supabase
+      .from('products')
+      .insert(productRow)
+      .select('id')
+      .single();
+    if (error) throw error;
+
+    try {
+      await saveProductRelatedRows(savedRow.id, newProduct);
+    } catch (saveError) {
+      // Clean up the parent row if one of its related inserts fails.
+      await supabase.from('products').delete().eq('id', savedRow.id);
+      throw saveError;
+    }
+
+    const savedProduct = {
       ...newProduct,
-      id: newProduct.id || `prod-${Date.now()}`,
-      slug: newProduct.slug || newProduct.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
+      id: savedRow.id,
+      slug: productRow.slug,
+      category: category.name,
+      categorySlug: category.slug,
       createdAt: new Date().toISOString()
     };
-    setDb((prev) => ({
-      ...prev,
-      products: [productWithId, ...prev.products]
-    }));
-    return productWithId;
+    setDb((previous) => ({ ...previous, products: [savedProduct, ...(previous.products || [])] }));
+    return savedProduct;
   };
 
-  const updateProduct = (id, updates) => {
-    setDb((prev) => ({
-      ...prev,
-      products: prev.products.map((p) => (p.id === id ? { ...p, ...updates, updatedAt: new Date().toISOString() } : p))
+  const updateProduct = async (id, updates) => {
+    if (!supabase) throw new Error('Supabase is not configured. Product was not updated.');
+    const existingProduct = (db.products || []).find((product) => product.id === id);
+    if (!existingProduct) throw new Error('Product was not found. Refresh the product list and try again.');
+
+    const updatedProduct = { ...existingProduct, ...updates };
+    const category = productCategoryFor(updatedProduct);
+    const productRow = productRowFor(updatedProduct, category);
+    if (!productRow.name) throw new Error('Enter a product name before saving.');
+
+    const { data, error } = await supabase
+      .from('products')
+      .update(productRow)
+      .eq('id', id)
+      .select('id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new Error('Product update returned no row. Check Supabase update permissions (RLS).');
+
+    // Replace the product's dependent records with the edited values.
+    await saveProductRelatedRows(id, updatedProduct, true);
+    const savedProduct = {
+      ...updatedProduct,
+      id,
+      slug: productRow.slug,
+      category: category.name,
+      categorySlug: category.slug,
+      updatedAt: new Date().toISOString()
+    };
+    setDb((previous) => ({
+      ...previous,
+      products: (previous.products || []).map((product) => product.id === id ? savedProduct : product)
     }));
+    return savedProduct;
   };
 
-  const deleteProduct = (id) => {
-    setDb((prev) => ({
-      ...prev,
-      products: prev.products.filter((p) => p.id !== id)
+  const deleteProduct = async (id) => {
+    if (!supabase) throw new Error('Supabase is not configured. Product was not deleted.');
+    for (const table of ['product_offers', 'product_specifications', 'product_images', 'product_variants']) {
+      const { error } = await supabase.from(table).delete().eq('product_id', id);
+      if (error) throw error;
+    }
+    const { error } = await supabase.from('products').delete().eq('id', id);
+    if (error) throw error;
+    setDb((previous) => ({
+      ...previous,
+      products: (previous.products || []).filter((product) => product.id !== id)
     }));
   };
-
   // Category Actions
   const makeCategorySlug = (name) =>
     name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
@@ -491,13 +720,154 @@ export function DataProvider({ children }) {
   };
 
   // Service Actions
-  const updateServices = (services) => {
-    setDb((prev) => ({ ...prev, services }));
+  const makeServiceSlug = (value) =>
+    value
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+
+  const serviceToRow = (service) => ({
+    slug: service.slug || makeServiceSlug(service.title || 'new-service'),
+    name: service.title?.trim() || '',
+    description: service.subtitle || null,
+    image_path: service.imagePath || null,
+    features: Array.isArray(service.features) ? service.features : [],
+    enquiry_service: service.enquiryService || null,
+    icon: service.icon || 'Wrench',
+    sort_order: service.order ?? 0,
+    is_active: service.active ?? true,
+    updated_at: new Date().toISOString()
+  });
+
+  const serviceFromRow = (row) => ({
+    id: row.id,
+    slug: row.slug,
+    title: row.name || '',
+    subtitle: row.description || '',
+    imagePath: row.image_path || '',
+    features: Array.isArray(row.features) ? row.features : [],
+    enquiryService: row.enquiry_service || '',
+    icon: row.icon || 'Wrench',
+    order: row.sort_order ?? 0,
+    active: Boolean(row.is_active)
+  });
+
+  const addService = async (service) => {
+    if (!supabase) {
+      throw new Error('Supabase is not configured. Service was not saved.');
+    }
+
+    const row = serviceToRow(service);
+
+    if (!row.name) {
+      throw new Error('Enter a service title before saving.');
+    }
+
+    const { data, error } = await supabase
+      .from('services')
+      .insert(row)
+      .select('*')
+      .single();
+
+    if (error) throw error;
+
+    const savedService = serviceFromRow(data);
+
+    setDb((prev) => ({
+      ...prev,
+      services: [...(prev.services || []), savedService]
+    }));
+
+    return savedService;
+  };
+
+  const updateService = async (id, updates) => {
+    if (!supabase) {
+      throw new Error('Supabase is not configured. Service was not updated.');
+    }
+
+    const currentService = (db.services || []).find(
+      (service) => service.id === id
+    );
+
+    if (!currentService) {
+      throw new Error('Service was not found.');
+    }
+
+    const updatedService = { ...currentService, ...updates };
+    const row = serviceToRow(updatedService);
+
+    if (!row.name) {
+      throw new Error('Service title cannot be empty.');
+    }
+
+    const { data, error } = await supabase
+      .from('services')
+      .update(row)
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) throw error;
+
+    const savedService = serviceFromRow(data);
+
+    setDb((prev) => ({
+      ...prev,
+      services: (prev.services || []).map((service) =>
+        service.id === id ? savedService : service
+      )
+    }));
+
+    return savedService;
+  };
+
+  const deleteService = async (id) => {
+    if (!supabase) {
+      throw new Error('Supabase is not configured. Service was not deleted.');
+    }
+
+    const { error } = await supabase
+      .from('services')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+
+    setDb((prev) => ({
+      ...prev,
+      services: (prev.services || []).filter((service) => service.id !== id)
+    }));
   };
 
   // Content & Settings Actions
-  const updateWebsiteContent = (websiteContent) => {
-    setDb((prev) => ({ ...prev, websiteContent }));
+  const updateWebsiteContent = async (websiteContent) => {
+    if (!supabase) {
+      throw new Error('Supabase is not configured. Website content was not saved.');
+    }
+
+    const { data, error } = await supabase
+      .from('website_content')
+      .upsert(
+        {
+          id: true,
+          content: websiteContent,
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: 'id' }
+      )
+      .select('id, content, updated_at')
+      .single();
+
+    if (error) throw error;
+
+    setDb((prev) => ({
+      ...prev,
+      websiteContent: data.content
+    }));
+
+    return data.content;
   };
 
   const updateContactSettings = async (contactSettings) => {
@@ -620,7 +990,9 @@ export function DataProvider({ children }) {
     updateOffer,
     deleteOffer,
     updateBanners,
-    updateServices,
+    addService,
+    updateService,
+    deleteService,
     updateWebsiteContent,
     updateContactSettings,
     updateChatbotSettings,
@@ -640,3 +1012,4 @@ export function useData() {
   }
   return context;
 }
+

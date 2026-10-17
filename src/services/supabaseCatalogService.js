@@ -124,6 +124,21 @@ function mapBanner(row) {
   };
 }
 
+function mapSupabaseService(row) {
+  return {
+    id: row.id,
+    slug: row.slug,
+    title: row.name || '',
+    subtitle: row.description || '',
+    imagePath: row.image_path || '',
+    features: Array.isArray(row.features) ? row.features : [],
+    enquiryService: row.enquiry_service || '',
+    icon: row.icon || 'Wrench',
+    order: row.sort_order ?? 0,
+    active: Boolean(row.is_active)
+  };
+}
+
 export async function fetchSupabaseCatalog(existingDatabase = {}) {
   if (!supabase) return null;
 
@@ -133,7 +148,8 @@ export async function fetchSupabaseCatalog(existingDatabase = {}) {
     variantsResult,
     imagesResult,
     specsResult,
-    bannersResult
+    bannersResult,
+    servicesResult
   ] = await Promise.all([
     supabase.from('products').select('*').order('name'),
     supabase.from('categories').select('*').order('sort_order'),
@@ -143,7 +159,8 @@ export async function fetchSupabaseCatalog(existingDatabase = {}) {
       .from('product_specifications')
       .select('*')
       .order('sort_order'),
-    supabase.from('banners').select('*').order('sort_order')
+    supabase.from('banners').select('*').order('sort_order'),
+    supabase.from('services').select('*').order('sort_order')
   ]);
 
   const failedResult = [
@@ -152,7 +169,8 @@ export async function fetchSupabaseCatalog(existingDatabase = {}) {
     variantsResult,
     imagesResult,
     specsResult,
-    bannersResult
+    bannersResult,
+    servicesResult
   ].find((result) => result.error);
 
   if (failedResult) throw failedResult.error;
@@ -174,6 +192,7 @@ export async function fetchSupabaseCatalog(existingDatabase = {}) {
     products: (productsResult.data || []).map((row) =>
       toCatalogProduct(row, related)
     ),
-    banners: (bannersResult.data || []).map(mapBanner)
+    banners: (bannersResult.data || []).map(mapBanner),
+    services: (servicesResult.data || []).map(mapSupabaseService)
   };
 }
